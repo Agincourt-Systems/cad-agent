@@ -17,6 +17,8 @@ CLI is the agent-facing interface. Those tests exercise:
   capture, and timeout diagnostics.
 - Requirement dimension ranges, topology checks, and AABB clearance checks.
 - STEP-backed cylindrical-hole feature detection.
+- Loop orchestration that fails once, invokes an external fixer command, passes
+  on the second iteration, and records max-iteration failure.
 
 Known gaps:
 
@@ -31,6 +33,7 @@ Known gaps:
 - The worker is process isolation, not a hardened OS sandbox.
 - Clearance checks are based on bounding boxes, not exact BREP distance.
 - Automatic feature detection currently handles cylindrical faces only.
+- `cadx loop` tests use a local fixer command, not a real Codex invocation.
 
 The remaining gap is acceptable at the end of ADR 0004 because the harness now
 has a tested full command loop with exact CAD exports, structured spatial facts,

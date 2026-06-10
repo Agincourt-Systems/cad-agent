@@ -20,6 +20,7 @@ cadx run design.py --params params.yaml
 cadx inspect artifacts/runs/0001
 cadx render artifacts/runs/0001
 cadx evaluate artifacts/runs/0001 --requirements requirements.yaml
+cadx loop design.py --params params.yaml --requirements requirements.yaml --agent-command "<agent command>"
 ```
 
 If `build123d` is not installed, `cadx run` still starts and reports a clear
@@ -37,6 +38,7 @@ Each successful run creates:
 - `checks.json` after evaluation
 - `report.md` after evaluation
 - `views/contact.png` after rendering
+- `artifacts/loop.json` after loop orchestration
 
 The harness is designed so text-only agents can reason from JSON and
 multimodal agents can inspect the rendered contact sheet.

@@ -49,3 +49,7 @@
   produced zero detected features without explicit `publish_feature()` calls.
 - Implemented STEP-backed cylindrical-hole detection in inspection; full suite
   passed with `11 passed`.
+- Started ADR 0008 on `codex/adr-0008-loop-orchestration`.
+- Confirmed ADR 0008 red state: `cadx loop` was not a recognized command.
+- Implemented bounded loop orchestration around run/render/evaluate plus an
+  external trusted agent command; full suite passed with `13 passed`.

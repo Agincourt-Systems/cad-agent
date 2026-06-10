@@ -16,6 +16,7 @@ from cadx.compare import compare_runs
 from cadx.evaluate import evaluate_run
 from cadx.files import init_project
 from cadx.inspector import inspect_run
+from cadx.loop import loop_until_done
 from cadx.renderer import render_run
 from cadx.runner import run_design
 
@@ -54,6 +55,16 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("left_run_dir", type=Path)
     compare_parser.add_argument("right_run_dir", type=Path)
 
+    loop_parser = subcommands.add_parser("loop", help="Run/render/evaluate until pass or iteration limit")
+    loop_parser.add_argument("source", type=Path)
+    loop_parser.add_argument("--params", type=Path, default=Path("params.yaml"))
+    loop_parser.add_argument("--requirements", type=Path, default=Path("requirements.yaml"))
+    loop_parser.add_argument("--artifact-root", type=Path, default=Path("artifacts/runs"))
+    loop_parser.add_argument("--loop-path", type=Path, default=Path("artifacts/loop.json"))
+    loop_parser.add_argument("--agent-command")
+    loop_parser.add_argument("--max-iterations", type=int, default=3)
+    loop_parser.add_argument("--timeout-seconds", type=float, default=30)
+
     return parser
 
 
@@ -82,6 +93,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "compare":
         _print(compare_runs(args.left_run_dir, args.right_run_dir))
         return 0
+    if args.command == "loop":
+        payload = loop_until_done(
+            args.source,
+            args.params,
+            args.requirements,
+            args.artifact_root,
+            args.loop_path,
+            args.agent_command,
+            args.max_iterations,
+            args.timeout_seconds,
+        )
+        _print(payload)
+        return 0 if payload["status"] == "pass" else 1
 
     raise AssertionError(f"unhandled command {args.command!r}")
 
