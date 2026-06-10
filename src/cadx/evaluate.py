@@ -122,6 +122,75 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str,
     raise ValueError(f"unsupported check type {check_type!r}")
 
 
+def _run_relative(path: Path, run_dir: Path) -> str:
+    """Return a stable path label for reports.
+
+    The report is stored inside the run directory, so relative artifact paths
+    are easier for agents and humans to scan than absolute temporary paths.
+    """
+
+    try:
+        return path.relative_to(run_dir).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _existing_artifacts(run_dir: Path) -> list[tuple[str, Path]]:
+    """List relevant artifacts that already exist for this run.
+
+    Rendering is a separate command. The evaluator records visual artifacts only
+    when they exist so `evaluate` remains useful before and after `render`.
+    """
+
+    candidates = [
+        ("diagnostics", run_dir / "diagnostics.json"),
+        ("spatial", run_dir / "spatial.json"),
+        ("checks", run_dir / "checks.json"),
+        ("contact_sheet", run_dir / "views" / "contact.png"),
+        ("render_manifest", run_dir / "views" / "render_manifest.json"),
+    ]
+    return [(label, path) for label, path in candidates if path.exists()]
+
+
+def _write_report(run_dir: Path, payload: dict[str, Any]) -> Path:
+    """Write the concise Markdown report agents use for convergence context."""
+
+    status = payload["status"].upper()
+    lines = [
+        "# CAD Agent Run Report",
+        "",
+        f"Status: {status}",
+        f"Checks: {payload['passed']}/{payload['total']} passed",
+        "",
+    ]
+
+    failed_checks = [check for check in payload["checks"] if check["status"] != "pass"]
+    if failed_checks:
+        lines.extend(["## Failed Checks", ""])
+        for check in failed_checks:
+            lines.extend(
+                [
+                    f"- {check['id']} ({check['type']})",
+                    f"  observed: {check.get('observed')}",
+                    f"  expected: {check.get('expected')}",
+                ]
+            )
+            if "tolerance" in check:
+                lines.append(f"  tolerance: {check['tolerance']}")
+        lines.append("")
+    else:
+        lines.extend(["## Failed Checks", "", "None.", ""])
+
+    lines.extend(["## Artifacts", ""])
+    for label, path in _existing_artifacts(run_dir):
+        lines.append(f"- {label}: {_run_relative(path, run_dir)}")
+    lines.append("")
+
+    report_path = run_dir / "report.md"
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return report_path
+
+
 def evaluate_run(run_dir: Path, requirements_path: Path) -> dict[str, Any]:
     """Evaluate ``requirements.yaml`` against a run's spatial facts."""
 
@@ -139,10 +208,12 @@ def evaluate_run(run_dir: Path, requirements_path: Path) -> dict[str, Any]:
         "checks": results,
     }
     write_json(run_dir / "checks.json", payload)
+    report_path = _write_report(run_dir, payload)
     return {
         "status": payload["status"],
         "passed": payload["passed"],
         "total": payload["total"],
         "failed": failed,
         "checks_path": str(run_dir / "checks.json"),
+        "report_path": str(report_path),
     }

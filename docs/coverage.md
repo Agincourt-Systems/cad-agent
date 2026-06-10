@@ -11,6 +11,8 @@ CLI is the agent-facing interface. Those tests exercise:
 - Contact-sheet rendering.
 - Requirement evaluation, including a failing check.
 - Run-to-run comparison.
+- Real end-to-end agent convergence with a parameterized build123d model,
+  failed evaluation report, corrected run, passing evaluation, and comparison.
 
 Known gaps:
 
@@ -20,8 +22,11 @@ Known gaps:
   relies on explicit `publish` and `publish_feature` calls.
 - Shaded raster rendering is not implemented; ADR 0003 covers deterministic
   hidden-line and section SVGs generated from the STEP artifact.
+- The E2E loop covers parameter correction, but not autonomous source-code
+  patching by an external agent process.
 
-The remaining gap is acceptable at the end of ADR 0003 because the agent now
-receives exact CAD exports, structured spatial facts, real projection SVGs, and
-real section SVGs. Shaded raster rendering can be added as a later visual
-quality improvement.
+The remaining gap is acceptable at the end of ADR 0004 because the harness now
+has a tested full command loop with exact CAD exports, structured spatial facts,
+real projection SVGs, real section SVGs, evaluation reports, and run-to-run
+comparison. External agent orchestration and shaded raster rendering can be
+added as later improvements.

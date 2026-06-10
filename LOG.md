@@ -28,3 +28,9 @@
 - Implemented STEP-backed ISO/top/front/right SVG projections, XY/XZ/YZ section
   SVG projections, and `views/render_manifest.json`; full suite passed with
   `5 passed`.
+- Started ADR 0004 on `codex/adr-0004-end-to-end-loop`.
+- Confirmed ADR 0004 red state: the real agent-loop test failed because
+  `cadx evaluate` did not return `report_path` or write `report.md`.
+- Implemented evaluation reports that summarize failed checks and list existing
+  spatial, checks, contact sheet, and render manifest artifacts; full suite
+  passed with `6 passed`.

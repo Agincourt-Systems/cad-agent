@@ -35,6 +35,7 @@ Each successful run creates:
 - `spatial.json`
 - `diagnostics.json`
 - `checks.json` after evaluation
+- `report.md` after evaluation
 - `views/contact.png` after rendering
 
 The harness is designed so text-only agents can reason from JSON and
