@@ -58,3 +58,7 @@
   behavior and reported `0` for diagonally separated cylinders.
 - Implemented STEP-backed exact BREP clearance using `Shape.distance()`; full
   suite passed with `15 passed`.
+- Started ADR 0010 on `codex/adr-0010-richer-feature-detection`.
+- Confirmed ADR 0010 red state: richer automatic feature kinds were absent.
+- Implemented planar datum, cylindrical boss, and simple obround slot detection;
+  full suite passed with `16 passed`.
