@@ -13,3 +13,10 @@
 - Pushed `master` and `codex/adr-0001-agentic-harness-contract` to
   `git@github.com:torchhound/cad-agent.git` after the user configured the
   remote.
+- Started ADR 0002 on `codex/adr-0002-build123d-integration`.
+- Installed `cad-agent` with `[cad,render,test]` into the Python 3.10 user site
+  on `fjord`; `python3-venv` was unavailable.
+- Confirmed ADR 0002 red state: real `build123d` exports existed, but
+  `cadx run` did not write `spatial.json` immediately.
+- Implemented runtime metadata and immediate spatial inspection for successful
+  runs; full focused suite passed with `4 passed`.

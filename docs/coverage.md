@@ -14,13 +14,13 @@ CLI is the agent-facing interface. Those tests exercise:
 
 Known gaps:
 
-- Real `build123d` export paths are not executed in this environment because
-  `build123d` is not installed on `fjord`.
 - Runtime-error handling is covered by implementation review and diagnostics
   structure, but not by a dedicated failing-design test yet.
 - Automatic CAD topology discovery is not implemented in ADR 0001; the MVP
   relies on explicit `publish` and `publish_feature` calls.
+- Rendering still uses a metric placeholder contact sheet rather than real CAD
+  view rasterization.
 
-The gap is acceptable for ADR 0001 because the feature's primary contract is
-the agent loop and artifact schema. The next branch that installs or vendors a
-CAD runtime should add extended integration tests using real build123d parts.
+The remaining gap is acceptable at the end of ADR 0002 because the real
+`build123d` export and spatial loop is now covered by an integration test.
+Rendering is handled by the next ADR.

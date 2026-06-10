@@ -148,6 +148,22 @@ def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list
     return exports, warnings
 
 
+def _runtime_metadata() -> dict[str, Any]:
+    """Capture runtime versions that affect reproducibility."""
+
+    try:
+        import build123d
+
+        build123d_version = getattr(build123d, "__version__", None)
+    except Exception:
+        build123d_version = None
+
+    return {
+        "python_version": sys.version.split()[0],
+        "build123d_version": build123d_version,
+    }
+
+
 def _load_module(source_path: Path) -> ModuleType:
     """Load the design source as an isolated Python module."""
 
@@ -200,6 +216,7 @@ def run_design(source: Path, params_path: Path, artifact_root: Path) -> dict[str
             "schema_version": "1.0",
             "status": "ok",
             "units": "mm",
+            "runtime": _runtime_metadata(),
             "source": str(source_path),
             "params": params,
             "published": published,
@@ -209,6 +226,9 @@ def run_design(source: Path, params_path: Path, artifact_root: Path) -> dict[str
             "exports": exports,
         }
         write_json(run_dir / "diagnostics.json", diagnostics)
+        from cadx.inspector import inspect_run
+
+        inspect_run(run_dir)
         return {
             "run_id": run_id,
             "status": "ok",
@@ -221,6 +241,7 @@ def run_design(source: Path, params_path: Path, artifact_root: Path) -> dict[str
             "schema_version": "1.0",
             "status": "error",
             "units": "mm",
+            "runtime": _runtime_metadata(),
             "source": str(source_path),
             "params": params,
             "published": [],
