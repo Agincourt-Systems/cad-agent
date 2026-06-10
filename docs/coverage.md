@@ -25,24 +25,21 @@ CLI is the agent-facing interface. Those tests exercise:
 
 Known gaps:
 
-- Runtime-error handling is covered by implementation review and diagnostics
-  structure, but not by a dedicated failing-design test yet.
-- Automatic CAD topology discovery is not implemented in ADR 0001; the MVP
-  relies on explicit `publish` and `publish_feature` calls.
-- Shaded raster rendering is not implemented; ADR 0003 covers deterministic
-  hidden-line and section SVGs generated from the STEP artifact.
 - The E2E loop covers parameter correction, but not autonomous source-code
   patching by an external agent process.
 - The worker is process isolation, not a hardened OS sandbox.
-- Clearance checks are based on bounding boxes, not exact BREP distance.
-- Automatic feature detection currently handles cylindrical faces only.
-- `cadx loop` tests use a local fixer command, not a real Codex invocation.
-- Exact clearance currently depends on per-object STEP exports.
+- Default clearance checks use AABB distance; exact BREP clearance requires
+  `method: exact` and per-object STEP exports.
+- Automatic feature detection covers planar datums, cylindrical holes and
+  bosses, and simple obround slots; other feature kinds still require explicit
+  publication.
+- `cadx loop` tests use a local fixer command, not a real coding-agent
+  invocation.
 - Slot detection is limited to paired partial cylindrical end faces.
 - Shaded raster rendering is a simple software renderer, not photorealistic.
 
-The remaining gap is acceptable at the end of ADR 0004 because the harness now
-has a tested full command loop with exact CAD exports, structured spatial facts,
-real projection SVGs, real section SVGs, evaluation reports, and run-to-run
-comparison. External agent orchestration and shaded raster rendering can be
-added as later improvements.
+The remaining gaps are acceptable at the end of ADR 0011 because the harness
+has a tested full command loop with exact CAD exports, structured spatial
+facts, projection and section SVGs, shaded raster output, evaluation reports,
+loop orchestration, and run-to-run comparison. Hardened sandboxing and
+agent-driven source patching can be added as later improvements.

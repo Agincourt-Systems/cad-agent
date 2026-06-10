@@ -68,3 +68,19 @@
   headless software STL rasterizer that writes `views/shaded_iso.png`.
 - Generated `docs/images/cad-output.png` from real CAD output and added it to
   the README; full suite passed with `17 passed`.
+
+## 2026-06-09 — overnight session (Claude)
+
+- Read `AGENTS.md`, `README.md`, `LESSONS.md`, `LOG.md`, `MEMORY.md`, and
+  `docs/` to take over from the prior Codex sessions; confirmed the full suite
+  still passes with 17 tests.
+- Smoke-tested every CLI command against real `build123d` in a scratch
+  directory. `init`, `run`, `inspect`, `render`, `compare`, and `loop` all
+  executed, but the `cadx init` starter project failed its own starter
+  requirements: `mount_holes` observed 4 cylindrical holes on a 2-hole plate
+  because automatic STEP detection (ADR 0007) re-detected the two explicitly
+  published features.
+- Corrected stale `docs/coverage.md` known-gap entries that ADRs 0005, 0007,
+  0009, 0010, and 0011 had already closed (runtime-error test, automatic
+  detection, exact clearance, shaded raster rendering) and re-dated the
+  closing rationale from ADR 0004 to ADR 0011.
