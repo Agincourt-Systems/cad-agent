@@ -20,3 +20,11 @@
   `cadx run` did not write `spatial.json` immediately.
 - Implemented runtime metadata and immediate spatial inspection for successful
   runs; full focused suite passed with `4 passed`.
+- Merged ADR 0002 into `master` with a fast-forward merge and pushed
+  `master` plus the preserved feature branch.
+- Started ADR 0003 on `codex/adr-0003-real-view-rendering`.
+- Confirmed ADR 0003 red state: `cadx render` had no render manifest, then no
+  section artifacts after projection rendering was added.
+- Implemented STEP-backed ISO/top/front/right SVG projections, XY/XZ/YZ section
+  SVG projections, and `views/render_manifest.json`; full suite passed with
+  `5 passed`.
