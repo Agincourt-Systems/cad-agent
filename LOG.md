@@ -44,3 +44,8 @@
   `topology`/`clearance` checks were unsupported.
 - Implemented dimension ranges, topology target checks, and AABB clearance
   checks; full suite passed with `10 passed`.
+- Started ADR 0007 on `codex/adr-0007-automatic-feature-detection`.
+- Confirmed ADR 0007 red state: a real plate with two cylindrical cutouts
+  produced zero detected features without explicit `publish_feature()` calls.
+- Implemented STEP-backed cylindrical-hole detection in inspection; full suite
+  passed with `11 passed`.

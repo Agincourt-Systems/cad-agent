@@ -16,6 +16,7 @@ CLI is the agent-facing interface. Those tests exercise:
 - Subprocess worker isolation, including runtime error capture, stdout/stderr
   capture, and timeout diagnostics.
 - Requirement dimension ranges, topology checks, and AABB clearance checks.
+- STEP-backed cylindrical-hole feature detection.
 
 Known gaps:
 
@@ -29,6 +30,7 @@ Known gaps:
   patching by an external agent process.
 - The worker is process isolation, not a hardened OS sandbox.
 - Clearance checks are based on bounding boxes, not exact BREP distance.
+- Automatic feature detection currently handles cylindrical faces only.
 
 The remaining gap is acceptable at the end of ADR 0004 because the harness now
 has a tested full command loop with exact CAD exports, structured spatial facts,
