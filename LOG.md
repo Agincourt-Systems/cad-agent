@@ -34,3 +34,8 @@
 - Implemented evaluation reports that summarize failed checks and list existing
   spatial, checks, contact sheet, and render manifest artifacts; full suite
   passed with `6 passed`.
+- Started ADR 0005 on `codex/adr-0005-isolated-execution-worker`.
+- Confirmed ADR 0005 red state: design stdout polluted CLI JSON, and
+  `cadx run` had no timeout option for hanging designs.
+- Implemented `cadx.worker`, subprocess execution, stdout/stderr capture, and
+  timeout diagnostics; full suite passed with `8 passed`.

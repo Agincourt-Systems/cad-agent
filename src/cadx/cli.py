@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("source", type=Path)
     run_parser.add_argument("--params", type=Path, default=Path("params.yaml"))
     run_parser.add_argument("--artifact-root", type=Path, default=Path("artifacts/runs"))
+    run_parser.add_argument("--timeout-seconds", type=float, default=30)
 
     inspect_parser = subcommands.add_parser("inspect", help="Write spatial.json for a run")
     inspect_parser.add_argument("run_dir", type=Path)
@@ -65,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(init_project(Path.cwd()))
         return 0
     if args.command == "run":
-        payload = run_design(args.source, args.params, args.artifact_root)
+        payload = run_design(args.source, args.params, args.artifact_root, args.timeout_seconds)
         _print(payload)
         return 0 if payload["status"] == "ok" else 1
     if args.command == "inspect":

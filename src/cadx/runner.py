@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import subprocess
 import sys
 import traceback
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from cadx.files import load_yaml, next_run_dir, write_json, write_yaml
+from cadx.files import load_yaml, next_run_dir, read_json, write_json, write_yaml
 from cadx.registry import clear_registry, publish, snapshot_registry
 
 
@@ -192,7 +193,82 @@ def _execute_design(source_path: Path, params: dict[str, Any]) -> dict[str, Any]
     return registry
 
 
-def run_design(source: Path, params_path: Path, artifact_root: Path) -> dict[str, Any]:
+def _stream_text(stream: str | bytes | None) -> str:
+    """Normalize subprocess output streams to text for diagnostics."""
+
+    if stream is None:
+        return ""
+    if isinstance(stream, bytes):
+        return stream.decode(errors="replace")
+    return stream
+
+
+def _base_diagnostics(source_path: Path, params: dict[str, Any]) -> dict[str, Any]:
+    """Create the common diagnostic envelope for parent-authored failures."""
+
+    return {
+        "schema_version": "1.0",
+        "units": "mm",
+        "runtime": _runtime_metadata(),
+        "source": str(source_path),
+        "params": params,
+        "published": [],
+        "features": [],
+        "warnings": [],
+        "exports": [],
+    }
+
+
+def _write_worker_failure(
+    run_dir: Path,
+    source_path: Path,
+    params: dict[str, Any],
+    status: str,
+    error_type: str,
+    message: str,
+    stdout: str = "",
+    stderr: str = "",
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Write diagnostics when the parent cannot rely on worker output."""
+
+    diagnostics = {
+        **_base_diagnostics(source_path, params),
+        "status": status,
+        "errors": [{"type": error_type, "message": message, "traceback": ""}],
+        "captured_stdout": stdout,
+        "captured_stderr": stderr,
+    }
+    if timeout_seconds is not None:
+        diagnostics["timeout_seconds"] = timeout_seconds
+    write_json(run_dir / "diagnostics.json", diagnostics)
+    return diagnostics
+
+
+def _attach_captured_streams(run_dir: Path, stdout: str, stderr: str) -> dict[str, Any]:
+    """Add worker stdout/stderr to diagnostics without changing semantics."""
+
+    diagnostics_path = run_dir / "diagnostics.json"
+    diagnostics = read_json(diagnostics_path)
+    diagnostics["captured_stdout"] = stdout
+    diagnostics["captured_stderr"] = stderr
+    write_json(diagnostics_path, diagnostics)
+    return diagnostics
+
+
+def _payload_from_diagnostics(run_id: str, run_dir: Path, diagnostics: dict[str, Any]) -> dict[str, Any]:
+    """Build the compact CLI payload from diagnostic facts."""
+
+    return {
+        "run_id": run_id,
+        "status": diagnostics["status"],
+        "artifact_dir": str(run_dir),
+        "published": [obj["label"] for obj in diagnostics.get("published", [])],
+        "errors": diagnostics.get("errors", []),
+    }
+
+
+def run_design(source: Path, params_path: Path, artifact_root: Path, timeout_seconds: float = 30) -> dict[str, Any]:
     """Run a design source and create a numbered artifact directory."""
 
     source_path = source.resolve()
@@ -204,63 +280,41 @@ def run_design(source: Path, params_path: Path, artifact_root: Path) -> dict[str
     write_yaml(run_dir / "params.resolved.yaml", params)
 
     try:
-        raw_registry = _execute_design(source_path, params)
-        published = [_normalize_published(entry) for entry in raw_registry["published"]]
-        exports: list[dict[str, Any]] = []
-        warnings: list[dict[str, Any]] = []
-        for entry in raw_registry["published"]:
-            entry_exports, entry_warnings = _export_build123d_object(entry, run_dir)
-            exports.extend(entry_exports)
-            warnings.extend(entry_warnings)
-        diagnostics = {
-            "schema_version": "1.0",
-            "status": "ok",
-            "units": "mm",
-            "runtime": _runtime_metadata(),
-            "source": str(source_path),
-            "params": params,
-            "published": published,
-            "features": raw_registry["features"],
-            "errors": [],
-            "warnings": warnings,
-            "exports": exports,
-        }
-        write_json(run_dir / "diagnostics.json", diagnostics)
-        from cadx.inspector import inspect_run
+        completed = subprocess.run(
+            [sys.executable, "-m", "cadx.worker", str(source_path), str(run_dir)],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        diagnostics = _write_worker_failure(
+            run_dir,
+            source_path,
+            params,
+            "timeout",
+            "TimeoutExpired",
+            f"design execution exceeded {timeout_seconds} seconds",
+            _stream_text(exc.output),
+            _stream_text(exc.stderr),
+            timeout_seconds,
+        )
+        return _payload_from_diagnostics(run_id, run_dir, diagnostics)
 
-        inspect_run(run_dir)
-        return {
-            "run_id": run_id,
-            "status": "ok",
-            "artifact_dir": str(run_dir),
-            "published": [obj["label"] for obj in published],
-            "errors": [],
-        }
-    except Exception as exc:  # pragma: no cover - covered by integration use, not MVP success path.
-        diagnostics = {
-            "schema_version": "1.0",
-            "status": "error",
-            "units": "mm",
-            "runtime": _runtime_metadata(),
-            "source": str(source_path),
-            "params": params,
-            "published": [],
-            "features": [],
-            "errors": [
-                {
-                    "type": exc.__class__.__name__,
-                    "message": str(exc),
-                    "traceback": traceback.format_exc(),
-                }
-            ],
-            "warnings": [],
-            "exports": [],
-        }
-        write_json(run_dir / "diagnostics.json", diagnostics)
-        return {
-            "run_id": run_id,
-            "status": "error",
-            "artifact_dir": str(run_dir),
-            "published": [],
-            "errors": diagnostics["errors"],
-        }
+    stdout = _stream_text(completed.stdout)
+    stderr = _stream_text(completed.stderr)
+    if not (run_dir / "diagnostics.json").exists():
+        diagnostics = _write_worker_failure(
+            run_dir,
+            source_path,
+            params,
+            "error",
+            "WorkerFailed",
+            f"worker exited with {completed.returncode} before writing diagnostics",
+            stdout,
+            stderr,
+        )
+        return _payload_from_diagnostics(run_id, run_dir, diagnostics)
+
+    diagnostics = _attach_captured_streams(run_dir, stdout, stderr)
+    return _payload_from_diagnostics(run_id, run_dir, diagnostics)

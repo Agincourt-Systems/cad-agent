@@ -13,6 +13,8 @@ CLI is the agent-facing interface. Those tests exercise:
 - Run-to-run comparison.
 - Real end-to-end agent convergence with a parameterized build123d model,
   failed evaluation report, corrected run, passing evaluation, and comparison.
+- Subprocess worker isolation, including runtime error capture, stdout/stderr
+  capture, and timeout diagnostics.
 
 Known gaps:
 
@@ -24,6 +26,7 @@ Known gaps:
   hidden-line and section SVGs generated from the STEP artifact.
 - The E2E loop covers parameter correction, but not autonomous source-code
   patching by an external agent process.
+- The worker is process isolation, not a hardened OS sandbox.
 
 The remaining gap is acceptable at the end of ADR 0004 because the harness now
 has a tested full command loop with exact CAD exports, structured spatial facts,
