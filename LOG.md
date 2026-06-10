@@ -62,3 +62,9 @@
 - Confirmed ADR 0010 red state: richer automatic feature kinds were absent.
 - Implemented planar datum, cylindrical boss, and simple obround slot detection;
   full suite passed with `16 passed`.
+- Started ADR 0011 on `codex/adr-0011-shaded-raster-rendering`.
+- Confirmed ADR 0011 red state: render manifests had no shaded raster artifact.
+- VTK offscreen rendering aborted without an X server, so implemented a
+  headless software STL rasterizer that writes `views/shaded_iso.png`.
+- Generated `docs/images/cad-output.png` from real CAD output and added it to
+  the README; full suite passed with `17 passed`.

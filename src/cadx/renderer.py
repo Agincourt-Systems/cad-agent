@@ -7,7 +7,9 @@ and hidden-line projections into the same contact-sheet contract.
 
 from __future__ import annotations
 
+from math import sqrt
 from pathlib import Path
+import struct
 from typing import Any
 
 from cadx.files import read_json, write_json
@@ -119,18 +121,146 @@ def _step_exports(run_dir: Path) -> list[dict[str, Any]]:
     return exports
 
 
+def _stl_exports(run_dir: Path) -> list[dict[str, Any]]:
+    """Return STL exports from diagnostics, normalized to local paths."""
+
+    diagnostics_path = run_dir / "diagnostics.json"
+    if not diagnostics_path.exists():
+        return []
+    diagnostics = read_json(diagnostics_path)
+    exports: list[dict[str, Any]] = []
+    for export in diagnostics.get("exports", []):
+        if export.get("format") == "stl":
+            exports.append({**export, "path": str(_resolve_export_path(run_dir, export["path"]))})
+    return exports
+
+
+def _normalize(vector: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Return a unit vector, preserving zero vectors."""
+
+    length = sqrt(sum(component * component for component in vector))
+    if length == 0:
+        return (0.0, 0.0, 0.0)
+    return tuple(component / length for component in vector)
+
+
+def _triangle_normal(vertices: list[tuple[float, float, float]]) -> tuple[float, float, float]:
+    """Compute a triangle normal from its vertices."""
+
+    a, b, c = vertices
+    ab = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    ac = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+    normal = (
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    )
+    return _normalize(normal)
+
+
+def _read_binary_stl(path: Path) -> list[list[tuple[float, float, float]]]:
+    """Read triangles from a binary STL file."""
+
+    data = path.read_bytes()
+    if len(data) < 84:
+        return []
+    triangle_count = struct.unpack_from("<I", data, 80)[0]
+    triangles: list[list[tuple[float, float, float]]] = []
+    offset = 84
+    for _ in range(triangle_count):
+        if offset + 50 > len(data):
+            break
+        floats = struct.unpack_from("<12f", data, offset)
+        vertices = [
+            (floats[3], floats[4], floats[5]),
+            (floats[6], floats[7], floats[8]),
+            (floats[9], floats[10], floats[11]),
+        ]
+        triangles.append(vertices)
+        offset += 50
+    return triangles
+
+
+def _project_iso(point: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Project a 3D point into deterministic isometric screen coordinates."""
+
+    x, y, z = point
+    screen_x = (x - y) * 0.8660254038
+    screen_y = (x + y) * 0.5 - z
+    depth = x + y + z
+    return screen_x, screen_y, depth
+
+
+def _render_stl_shaded(stl_path: Path, target: Path, size: tuple[int, int] = (900, 650)) -> None:
+    """Render a simple shaded isometric PNG from STL triangles.
+
+    This is a deterministic software rasterizer. It is intentionally small and
+    dependency-light so shaded output works in headless environments where VTK
+    or browser rendering may not be available.
+    """
+
+    from PIL import Image, ImageDraw
+
+    triangles = _read_binary_stl(stl_path)
+    image = Image.new("RGB", size, "white")
+    if not triangles:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        image.save(target)
+        return
+
+    projected = [
+        {
+            "points": [_project_iso(vertex) for vertex in triangle],
+            "normal": _triangle_normal(triangle),
+        }
+        for triangle in triangles
+    ]
+    all_x = [point[0] for triangle in projected for point in triangle["points"]]
+    all_y = [point[1] for triangle in projected for point in triangle["points"]]
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    margin = 48
+    scale = min(
+        (size[0] - margin * 2) / max(max_x - min_x, 1e-6),
+        (size[1] - margin * 2) / max(max_y - min_y, 1e-6),
+    )
+
+    light = _normalize((0.35, -0.45, 0.82))
+    base = (66, 132, 184)
+    draw = ImageDraw.Draw(image)
+    for triangle in sorted(projected, key=lambda item: sum(point[2] for point in item["points"])):
+        points_2d = [
+            (
+                margin + (point[0] - min_x) * scale,
+                margin + (point[1] - min_y) * scale,
+            )
+            for point in triangle["points"]
+        ]
+        normal = triangle["normal"]
+        shade = 0.35 + 0.65 * max(0.0, sum(normal[index] * light[index] for index in range(3)))
+        color = tuple(max(0, min(255, int(component * shade))) for component in base)
+        draw.polygon(points_2d, fill=color, outline=(32, 54, 72))
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    image.save(target)
+
+
 def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, int, int]) -> None:
     """Write one hidden-line SVG projection from a build123d shape."""
 
     from build123d import ExportSVG, LineType
 
-    visible, hidden = shape.project_to_viewport(viewport_origin)
     exporter = ExportSVG(scale=10, margin=2)
     exporter.add_layer("Visible", line_color=(20, 20, 20))
     exporter.add_layer("Hidden", line_color=(130, 130, 130), line_type=LineType.ISO_DOT)
-    exporter.add_shape(visible, layer="Visible")
-    if len(hidden) > 0:
-        exporter.add_shape(hidden, layer="Hidden")
+
+    shapes = [shape] if hasattr(shape, "project_to_viewport") else list(shape)
+    for item in shapes:
+        visible, hidden = item.project_to_viewport(viewport_origin)
+        if len(visible) > 0:
+            exporter.add_shape(visible, layer="Visible")
+        if len(hidden) > 0:
+            exporter.add_shape(hidden, layer="Hidden")
     target.parent.mkdir(parents=True, exist_ok=True)
     exporter.write(target)
 
@@ -189,6 +319,28 @@ def _render_step_artifacts(run_dir: Path) -> tuple[list[dict[str, Any]], list[di
     return rendered, sections
 
 
+def _render_raster_artifacts(run_dir: Path) -> list[dict[str, Any]]:
+    """Render shaded raster artifacts from STL exports."""
+
+    exports = _stl_exports(run_dir)
+    if not exports:
+        return []
+
+    export = exports[0]
+    target = run_dir / "views" / "shaded_iso.png"
+    _render_stl_shaded(Path(export["path"]), target)
+    return [
+        {
+            "name": "shaded_iso",
+            "path": str(target),
+            "source": export["path"],
+            "source_format": "stl",
+            "label": export.get("label"),
+            "camera": "isometric",
+        }
+    ]
+
+
 def render_run(run_dir: Path) -> dict[str, Any]:
     """Create the visual contact sheet for a run."""
 
@@ -200,6 +352,7 @@ def render_run(run_dir: Path) -> dict[str, Any]:
 
     spatial = read_json(spatial_path)
     views, sections = _render_step_artifacts(run_dir)
+    rasters = _render_raster_artifacts(run_dir)
     contact_sheet = run_dir / "views" / "contact.png"
     _draw_with_pillow(contact_sheet, spatial)
     manifest = {
@@ -208,6 +361,7 @@ def render_run(run_dir: Path) -> dict[str, Any]:
         "contact_sheet": str(contact_sheet),
         "views": views,
         "sections": sections,
+        "rasters": rasters,
     }
     manifest_path = run_dir / "views" / "render_manifest.json"
     write_json(manifest_path, manifest)
@@ -215,5 +369,8 @@ def render_run(run_dir: Path) -> dict[str, Any]:
         "status": "ok",
         "contact_sheet": str(contact_sheet),
         "manifest": str(manifest_path),
-        "views": [str(contact_sheet)] + [view["path"] for view in views] + [section["path"] for section in sections],
+        "views": [str(contact_sheet)]
+        + [view["path"] for view in views]
+        + [section["path"] for section in sections]
+        + [raster["path"] for raster in rasters],
     }

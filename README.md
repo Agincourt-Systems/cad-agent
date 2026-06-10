@@ -9,6 +9,8 @@ The first implementation is intentionally CLI-first. MCP and richer browser
 viewer integrations can wrap the same run artifacts once the local contract is
 stable.
 
+![Shaded CAD output](docs/images/cad-output.png)
+
 ## Quick Start
 
 ```bash
@@ -38,7 +40,8 @@ Each successful run creates:
 - `checks.json` after evaluation
 - `report.md` after evaluation
 - `views/contact.png` after rendering
+- `views/shaded_iso.png` after rendering
 - `artifacts/loop.json` after loop orchestration
 
 The harness is designed so text-only agents can reason from JSON and
-multimodal agents can inspect the rendered contact sheet.
+multimodal agents can inspect the rendered contact sheet and shaded CAD image.

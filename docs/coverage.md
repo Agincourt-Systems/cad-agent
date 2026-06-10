@@ -21,6 +21,7 @@ CLI is the agent-facing interface. Those tests exercise:
   on the second iteration, and records max-iteration failure.
 - Exact BREP clearance checks from STEP exports.
 - Planar datum, cylindrical boss, and simple obround slot feature detection.
+- Headless shaded raster rendering from STL exports.
 
 Known gaps:
 
@@ -38,6 +39,7 @@ Known gaps:
 - `cadx loop` tests use a local fixer command, not a real Codex invocation.
 - Exact clearance currently depends on per-object STEP exports.
 - Slot detection is limited to paired partial cylindrical end faces.
+- Shaded raster rendering is a simple software renderer, not photorealistic.
 
 The remaining gap is acceptable at the end of ADR 0004 because the harness now
 has a tested full command loop with exact CAD exports, structured spatial facts,
