@@ -156,6 +156,64 @@ def _check_clearance(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str
     return {
         "id": check["id"],
         "type": "clearance",
+        "method": "aabb",
+        "status": "pass" if passed else "fail",
+        "observed": observed,
+        "expected": expected,
+        "tolerance": tolerance,
+        "between": check["between"],
+    }
+
+
+def _label_from_ref(ref: str) -> str:
+    """Return the object label from a requirement object reference."""
+
+    if not ref.startswith("obj."):
+        raise ValueError(f"unsupported object reference {ref!r}")
+    return ref.split(".", 1)[1]
+
+
+def _resolve_export_path(run_dir: Path, export_path: str) -> Path:
+    """Resolve a diagnostics export path from the current process."""
+
+    path = Path(export_path)
+    if path.exists():
+        return path
+    if path.is_absolute():
+        return path
+    return run_dir / path.name
+
+
+def _step_export_index(run_dir: Path) -> dict[str, Path]:
+    """Map published object labels to STEP export paths."""
+
+    diagnostics = read_json(run_dir / "diagnostics.json")
+    return {
+        export["label"]: _resolve_export_path(run_dir, export["path"])
+        for export in diagnostics.get("exports", [])
+        if export.get("format") == "step"
+    }
+
+
+def _check_exact_clearance(run_dir: Path, check: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate exact BREP clearance from exported STEP artifacts."""
+
+    from build123d import import_step
+
+    left_ref, right_ref = check["between"]
+    exports = _step_export_index(run_dir)
+    left_label = _label_from_ref(left_ref)
+    right_label = _label_from_ref(right_ref)
+    left_shape = import_step(exports[left_label])
+    right_shape = import_step(exports[right_label])
+    observed = float(left_shape.distance(right_shape))
+    expected = _numeric_expectation(check)
+    tolerance = check.get("tolerance", 0)
+    passed = _numeric_status(observed, check)
+    return {
+        "id": check["id"],
+        "type": "clearance",
+        "method": "exact",
         "status": "pass" if passed else "fail",
         "observed": observed,
         "expected": expected,
@@ -204,7 +262,7 @@ def _check_feature_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> 
     }
 
 
-def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     """Route a requirement entry to its evaluator."""
 
     check_type = check["type"]
@@ -213,6 +271,8 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str,
     if check_type == "topology":
         return _check_topology(spatial, check)
     if check_type == "clearance":
+        if check.get("method") == "exact":
+            return _check_exact_clearance(run_dir, check)
         return _check_clearance(spatial, check)
     if check_type == "feature_count":
         return _check_feature_count(spatial, check)
@@ -295,7 +355,7 @@ def evaluate_run(run_dir: Path, requirements_path: Path) -> dict[str, Any]:
 
     spatial = read_json(run_dir / "spatial.json")
     requirements = yaml.safe_load(requirements_path.read_text(encoding="utf-8")) or {}
-    results = [_evaluate_check(spatial, check) for check in requirements.get("checks", [])]
+    results = [_evaluate_check(spatial, check, run_dir) for check in requirements.get("checks", [])]
     failed = [result["id"] for result in results if result["status"] != "pass"]
 
     payload = {

@@ -53,3 +53,8 @@
 - Confirmed ADR 0008 red state: `cadx loop` was not a recognized command.
 - Implemented bounded loop orchestration around run/render/evaluate plus an
   external trusted agent command; full suite passed with `13 passed`.
+- Started ADR 0009 on `codex/adr-0009-exact-geometric-clearance`.
+- Confirmed ADR 0009 red state: `method: exact` clearance still used AABB
+  behavior and reported `0` for diagonally separated cylinders.
+- Implemented STEP-backed exact BREP clearance using `Shape.distance()`; full
+  suite passed with `15 passed`.
