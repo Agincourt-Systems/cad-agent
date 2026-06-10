@@ -10,3 +10,6 @@
   exist.
 - Implemented the ADR 0001 MVP harness and confirmed the focused remote suite
   passes: `3 passed in 0.48s`.
+- Pushed `master` and `codex/adr-0001-agentic-harness-contract` to
+  `git@github.com:torchhound/cad-agent.git` after the user configured the
+  remote.
