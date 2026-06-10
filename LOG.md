@@ -39,3 +39,8 @@
   `cadx run` had no timeout option for hanging designs.
 - Implemented `cadx.worker`, subprocess execution, stdout/stderr capture, and
   timeout diagnostics; full suite passed with `8 passed`.
+- Started ADR 0006 on `codex/adr-0006-richer-requirement-checks`.
+- Confirmed ADR 0006 red state: range dimensions required `equals`, and
+  `topology`/`clearance` checks were unsupported.
+- Implemented dimension ranges, topology target checks, and AABB clearance
+  checks; full suite passed with `10 passed`.

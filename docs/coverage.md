@@ -15,6 +15,7 @@ CLI is the agent-facing interface. Those tests exercise:
   failed evaluation report, corrected run, passing evaluation, and comparison.
 - Subprocess worker isolation, including runtime error capture, stdout/stderr
   capture, and timeout diagnostics.
+- Requirement dimension ranges, topology checks, and AABB clearance checks.
 
 Known gaps:
 
@@ -27,6 +28,7 @@ Known gaps:
 - The E2E loop covers parameter correction, but not autonomous source-code
   patching by an external agent process.
 - The worker is process isolation, not a hardened OS sandbox.
+- Clearance checks are based on bounding boxes, not exact BREP distance.
 
 The remaining gap is acceptable at the end of ADR 0004 because the harness now
 has a tested full command loop with exact CAD exports, structured spatial facts,

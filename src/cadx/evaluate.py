@@ -8,6 +8,7 @@ load or visually inspect the underlying geometry.
 from __future__ import annotations
 
 from pathlib import Path
+from math import sqrt
 from typing import Any
 
 import yaml
@@ -28,6 +29,36 @@ def _within_tolerance(observed: float, expected: float, tolerance: float) -> boo
     """Compare numeric values using an absolute tolerance in model units."""
 
     return abs(observed - expected) <= tolerance
+
+
+def _numeric_expectation(check: dict[str, Any]) -> Any:
+    """Return a compact expected value for check output.
+
+    Existing exact checks keep the scalar `equals` value for backward
+    compatibility. Range checks return only the supplied range boundaries.
+    """
+
+    if "equals" in check:
+        return check["equals"]
+    expected: dict[str, Any] = {}
+    if "min" in check:
+        expected["min"] = check["min"]
+    if "max" in check:
+        expected["max"] = check["max"]
+    return expected
+
+
+def _numeric_status(observed: float, check: dict[str, Any]) -> bool:
+    """Evaluate equals/min/max numeric clauses with optional tolerance."""
+
+    tolerance = float(check.get("tolerance", 0))
+    if "equals" in check and not _within_tolerance(float(observed), float(check["equals"]), tolerance):
+        return False
+    if "min" in check and float(observed) < float(check["min"]) - tolerance:
+        return False
+    if "max" in check and float(observed) > float(check["max"]) + tolerance:
+        return False
+    return True
 
 
 def _resolve_dimension(spatial: dict[str, Any], target: str) -> Any:
@@ -53,12 +84,12 @@ def _resolve_dimension(spatial: dict[str, Any], target: str) -> Any:
 
 
 def _check_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate a scalar dimension check."""
+    """Evaluate a scalar dimension exact or range check."""
 
     observed = _resolve_dimension(spatial, check["target"])
-    expected = check["equals"]
+    expected = _numeric_expectation(check)
     tolerance = check.get("tolerance", 0)
-    passed = _within_tolerance(float(observed), float(expected), float(tolerance))
+    passed = _numeric_status(float(observed), check)
     return {
         "id": check["id"],
         "type": "dimension",
@@ -66,6 +97,70 @@ def _check_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str
         "observed": observed,
         "expected": expected,
         "tolerance": tolerance,
+    }
+
+
+def _check_topology(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate topology counts through the same target-path grammar."""
+
+    observed = _resolve_dimension(spatial, check["target"])
+    expected = _numeric_expectation(check)
+    tolerance = check.get("tolerance", 0)
+    passed = _numeric_status(float(observed), check)
+    return {
+        "id": check["id"],
+        "type": "topology",
+        "status": "pass" if passed else "fail",
+        "observed": observed,
+        "expected": expected,
+        "tolerance": tolerance,
+    }
+
+
+def _object_by_ref(spatial: dict[str, Any], ref: str) -> dict[str, Any]:
+    """Resolve object references like `obj.left` from a check."""
+
+    if not ref.startswith("obj."):
+        raise ValueError(f"unsupported object reference {ref!r}")
+    label = ref.split(".", 1)[1]
+    return _object_index(spatial)[label]
+
+
+def _aabb_clearance(left: dict[str, Any], right: dict[str, Any]) -> float:
+    """Compute axis-aligned bounding-box clearance between two objects.
+
+    The result is exact for separated boxes and zero for overlapping boxes.
+    It is an approximation of real shape clearance, but it is deterministic
+    from `spatial.json` and cheap enough for the default evaluator path.
+    """
+
+    left_min = left["bbox"]["min"]
+    left_max = left["bbox"]["max"]
+    right_min = right["bbox"]["min"]
+    right_max = right["bbox"]["max"]
+    gaps = [
+        max(right_min[axis] - left_max[axis], left_min[axis] - right_max[axis], 0)
+        for axis in range(3)
+    ]
+    return sqrt(sum(gap * gap for gap in gaps))
+
+
+def _check_clearance(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate minimum AABB clearance between two spatial objects."""
+
+    left_ref, right_ref = check["between"]
+    observed = _aabb_clearance(_object_by_ref(spatial, left_ref), _object_by_ref(spatial, right_ref))
+    expected = _numeric_expectation(check)
+    tolerance = check.get("tolerance", 0)
+    passed = _numeric_status(observed, check)
+    return {
+        "id": check["id"],
+        "type": "clearance",
+        "status": "pass" if passed else "fail",
+        "observed": observed,
+        "expected": expected,
+        "tolerance": tolerance,
+        "between": check["between"],
     }
 
 
@@ -115,6 +210,10 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str,
     check_type = check["type"]
     if check_type == "dimension":
         return _check_dimension(spatial, check)
+    if check_type == "topology":
+        return _check_topology(spatial, check)
+    if check_type == "clearance":
+        return _check_clearance(spatial, check)
     if check_type == "feature_count":
         return _check_feature_count(spatial, check)
     if check_type == "feature_dimension":
