@@ -84,3 +84,11 @@
   0009, 0010, and 0011 had already closed (runtime-error test, automatic
   detection, exact clearance, shaded raster rendering) and re-dated the
   closing rationale from ADR 0004 to ADR 0011.
+- Started ADR 0012 on `claude/adr-0012-feature-deduplication`.
+- Confirmed ADR 0012 red state: the `cadx init` starter project failed its
+  own `mount_holes` check because explicit publications and automatic STEP
+  detection each reported the same two holes.
+- Implemented kind/size/axis-aware deduplication of detected features against
+  explicit publications in `inspect_run`, with `confirmed_by_detection`
+  marking on corroborated publications; full suite passed with `19 passed`
+  and a live `cadx init` → `cadx loop` smoke test converged in one iteration.

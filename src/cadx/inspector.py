@@ -8,10 +8,27 @@ agent needs immediately.
 
 from __future__ import annotations
 
+from math import sqrt
 from pathlib import Path
 from typing import Any
 
 from cadx.files import read_json, write_json
+
+
+# Maximum size and position mismatch, in model units (mm), for an explicit
+# publication and a detected feature to be treated as the same physical
+# feature. Tight enough that two real features are never merged, loose enough
+# to absorb STEP round-trip noise. Publications further off than this keep
+# double-counting on purpose: that discrepancy is signal for the agent.
+_DEDUP_TOLERANCE = 0.05
+
+# Size properties compared during deduplication when both sides publish them.
+_DEDUP_SIZE_PROPERTIES = ("diameter", "width", "length")
+
+# Kinds whose published "center" may legitimately sit anywhere along the
+# feature axis, so matching measures radial distance to the detected axis
+# line instead of point-to-point distance.
+_AXIAL_KINDS = {"cylindrical_hole", "cylindrical_boss"}
 
 
 def _with_bbox_size(obj: dict[str, Any]) -> dict[str, Any]:
@@ -236,12 +253,103 @@ def _auto_detect_features(diagnostics: dict[str, Any], run_dir: Path) -> list[di
     return detected
 
 
+def _coerce_point(value: Any) -> list[float] | None:
+    """Return a 3-component float point, or ``None`` when malformed.
+
+    Explicit ``publish_feature`` properties are arbitrary user data, so the
+    matcher validates instead of assuming the spatial schema.
+    """
+
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    try:
+        return [float(component) for component in value]
+    except (TypeError, ValueError):
+        return None
+
+
+def _sizes_match(explicit: dict[str, Any], detected: dict[str, Any]) -> bool:
+    """Compare size properties present on both features within tolerance."""
+
+    for name in _DEDUP_SIZE_PROPERTIES:
+        if name in explicit and name in detected:
+            try:
+                mismatch = abs(float(explicit[name]) - float(detected[name]))
+            except (TypeError, ValueError):
+                return False
+            if mismatch > _DEDUP_TOLERANCE:
+                return False
+    return True
+
+
+def _center_distance(explicit_center: list[float], detected: dict[str, Any]) -> float:
+    """Distance from an explicit center to the detected feature's location.
+
+    Cylindrical features are identified by their axis line: the component of
+    the offset along the detected axis is discarded because publications may
+    place the "center" at either face or at mid-depth. Other kinds compare
+    plain point-to-point distance.
+    """
+
+    detected_center = detected["center"]
+    delta = [explicit_c - detected_c for explicit_c, detected_c in zip(explicit_center, detected_center)]
+    axis = _coerce_point(detected.get("axis")) if detected.get("kind") in _AXIAL_KINDS else None
+    if axis is not None:
+        length = sqrt(sum(component * component for component in axis))
+        if length > 0:
+            unit = [component / length for component in axis]
+            axial = sum(d * a for d, a in zip(delta, unit))
+            radial_squared = sum(d * d for d in delta) - axial * axial
+            return sqrt(max(radial_squared, 0.0))
+    return sqrt(sum(d * d for d in delta))
+
+
+def _is_duplicate(explicit: dict[str, Any], detected: dict[str, Any]) -> bool:
+    """Decide whether a detected feature re-observes an explicit publication."""
+
+    if explicit.get("kind") != detected.get("kind"):
+        return False
+    explicit_center = _coerce_point(explicit.get("center"))
+    detected_center = _coerce_point(detected.get("center"))
+    if explicit_center is None or detected_center is None:
+        return False
+    if not _sizes_match(explicit, detected):
+        return False
+    return _center_distance(explicit_center, detected) <= _DEDUP_TOLERANCE
+
+
+def _merge_features(
+    explicit_features: list[dict[str, Any]],
+    detected_features: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Combine both feature channels without double-counting geometry.
+
+    Explicit publications are the source of truth and always survive with
+    their stable ids. A detected feature that matches one of them is dropped
+    and the publication is marked ``confirmed_by_detection`` so agents can
+    distinguish corroborated publications from unverified intent. Unmatched
+    features from either channel pass through unchanged.
+    """
+
+    merged = [dict(feature) for feature in explicit_features]
+    for detected in detected_features:
+        match = next((feature for feature in merged if _is_duplicate(feature, detected)), None)
+        if match is None:
+            merged.append(detected)
+        else:
+            match["confirmed_by_detection"] = True
+    return merged
+
+
 def inspect_run(run_dir: Path) -> dict[str, Any]:
     """Write ``spatial.json`` for a run and return a compact summary."""
 
     diagnostics = read_json(run_dir / "diagnostics.json")
     objects = [_with_bbox_size(dict(obj)) for obj in diagnostics.get("published", [])]
-    features = list(diagnostics.get("features", [])) + _auto_detect_features(diagnostics, run_dir)
+    features = _merge_features(
+        list(diagnostics.get("features", [])),
+        _auto_detect_features(diagnostics, run_dir),
+    )
     spatial = {
         "schema_version": "1.0",
         "units": diagnostics.get("units", "mm"),

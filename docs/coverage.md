@@ -22,6 +22,9 @@ CLI is the agent-facing interface. Those tests exercise:
 - Exact BREP clearance checks from STEP exports.
 - Planar datum, cylindrical boss, and simple obround slot feature detection.
 - Headless shaded raster rendering from STL exports.
+- Deduplication of automatically detected features against explicit
+  publications, including the full `cadx init` starter flow passing its own
+  requirements and preservation of unmatched explicit features.
 
 Known gaps:
 
