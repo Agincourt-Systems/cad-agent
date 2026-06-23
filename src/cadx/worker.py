@@ -14,8 +14,10 @@ from typing import Any
 
 from cadx.files import load_yaml, write_json
 from cadx.runner import (
+    _auto_export_flats,
     _execute_design,
     _export_build123d_object,
+    _export_flats,
     _normalize_published,
     _runtime_metadata,
 )
@@ -66,6 +68,20 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
             entry_exports, entry_warnings = _export_build123d_object(entry, run_dir)
             exports.extend(entry_exports)
             warnings.extend(entry_warnings)
+
+        # ADR 0013: emit 2D DXF flat patterns for laser/waterjet fabrication.
+        # Explicit publish_flat profiles take precedence; remaining published
+        # solids of uniform thickness are auto-flattened for free.
+        flats = raw_registry.get("flats", [])
+        explicit_flat_labels = {flat["label"] for flat in flats}
+        flat_exports, flat_warnings = _export_flats(flats, run_dir)
+        auto_exports, auto_warnings = _auto_export_flats(
+            raw_registry["published"], explicit_flat_labels, run_dir
+        )
+        exports.extend(flat_exports)
+        exports.extend(auto_exports)
+        warnings.extend(flat_warnings)
+        warnings.extend(auto_warnings)
 
         diagnostics = {
             "schema_version": "1.0",

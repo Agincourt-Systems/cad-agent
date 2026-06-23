@@ -62,7 +62,12 @@ def build(params):
 
     diagnostics = json.loads((run_dir / "diagnostics.json").read_text())
     assert diagnostics["runtime"]["build123d_version"] == build123d.__version__
-    assert {export["format"] for export in diagnostics["exports"]} == {"step", "stl", "glb"}
+    # ADR 0013 extends the export contract: a constant-thickness prism like this
+    # box is auto-flattened to a DXF alongside the original 3D exports, and every
+    # export record now declares millimeter units (D9).
+    assert {export["format"] for export in diagnostics["exports"]} == {"step", "stl", "glb", "dxf"}
+    assert all(export["units"] == "mm" for export in diagnostics["exports"])
+    assert (run_dir / "box.dxf").is_file()
 
     spatial = json.loads((run_dir / "spatial.json").read_text())
     [obj] = spatial["objects"]

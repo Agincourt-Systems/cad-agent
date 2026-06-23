@@ -25,6 +25,12 @@ CLI is the agent-facing interface. Those tests exercise:
 - Deduplication of automatically detected features against explicit
   publications, including the full `cadx init` starter flow passing its own
   requirements and preservation of unmatched explicit features.
+- DXF flat-pattern export (ADR 0013): explicit `publish_flat` profiles and
+  auto-flattened constant-thickness prisms emit SendCutSend-clean millimeter
+  DXF, parsed back with `ezdxf` for outline/hole/units assertions; the
+  prism-detector accept/reject decisions, the `flat_export_failed` and
+  `autoflatten_skipped` warning paths, the explicit/sheet-metal auto-flatten
+  skips, and the `units:"mm"` field on every step/stl/glb/dxf export record.
 
 Known gaps:
 

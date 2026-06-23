@@ -7,11 +7,18 @@ evaluation. The helpers are usable even when ``build123d`` is not installed,
 which keeps tests and synthetic examples lightweight.
 """
 
-from cadx.registry import clear_registry, publish, publish_feature, snapshot_registry
+from cadx.registry import (
+    clear_registry,
+    publish,
+    publish_feature,
+    publish_flat,
+    snapshot_registry,
+)
 
 __all__ = [
     "clear_registry",
     "publish",
     "publish_feature",
+    "publish_flat",
     "snapshot_registry",
 ]

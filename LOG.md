@@ -92,3 +92,26 @@
   explicit publications in `inspect_run`, with `confirmed_by_detection`
   marking on corroborated publications; full suite passed with `19 passed`
   and a live `cadx init` → `cadx loop` smoke test converged in one iteration.
+
+## 2026-06-23 — sheet-metal / SendCutSend track (Claude)
+
+- Read `docs/ca-sheet-metal-fixes.md`: nine deficiencies (D1–D9) for a
+  laser-cut sheet-metal → SendCutSend workflow. Mapped them to eight ADRs
+  (0013–0020) and confirmed implementation order
+  `0013 → 0014 → 0015 → 0016 → 0017 → 0018 → 0019 → 0020`.
+- Ran a design pass that drafted each ADR + its red tests + an implementation
+  plan in parallel, then reconciled the shared machine contract (export-record
+  vocabulary, new `spatial.json`/`checks.json` keys, registry signatures) into
+  `scratchpad/design/CONTRACT.md` so the sequential implementation never
+  regresses an earlier ADR. Confirmed `build123d 0.10.0` already ships
+  `ExportDXF`/`ExportSVG` (the spec's 0.11 note is moot) and `ezdxf 1.4.4` is
+  available for DXF parsing in tests.
+- Started ADR 0013 on `claude/adr-0013-dxf-flat-pattern-export`.
+- Confirmed ADR 0013 red state: `from cadx import publish_flat` raised
+  `ImportError`, and no `format=="dxf"` export records or `units` keys existed.
+- Implemented `publish_flat` + a `_FLATS` registry channel, a shared `_write_dxf`
+  writer, `_flatten_to_xy` plane-localization (works around `ExportDXF` silently
+  dropping off-XY-plane geometry), an auto-flatten volume-invariant prism
+  detector, and `unit=Unit.MM` + `units:"mm"` on every export record (D9).
+  Updated the ADR 0002 integration test for the intentionally extended export
+  contract (`{step,stl,glb,dxf}`). Full suite passed with `34 passed`.

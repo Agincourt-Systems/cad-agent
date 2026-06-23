@@ -116,7 +116,7 @@ def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list
         return [], []
 
     try:
-        from build123d import export_gltf, export_step, export_stl
+        from build123d import Unit, export_gltf, export_step, export_stl
     except Exception as exc:
         return [], [
             {
@@ -128,15 +128,20 @@ def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list
     label = entry["label"]
     exports: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    # D9: declare millimeter units explicitly so a downstream agent never has to
+    # guess scale. STEP and glTF accept an explicit ``unit``; ``export_stl`` has
+    # no unit parameter because STL is a unitless format, so its record carries
+    # ``units: "mm"`` to document the modeling unit without claiming the file
+    # itself encodes one.
     for extension, exporter, kwargs in [
-        ("step", export_step, {}),
+        ("step", export_step, {"unit": Unit.MM}),
         ("stl", export_stl, {}),
-        ("glb", export_gltf, {"binary": True}),
+        ("glb", export_gltf, {"binary": True, "unit": Unit.MM}),
     ]:
         target = run_dir / f"{label}.{extension}"
         try:
             exporter(obj, target, **kwargs)
-            exports.append({"label": label, "format": extension, "path": str(target)})
+            exports.append({"label": label, "format": extension, "path": str(target), "units": "mm"})
         except Exception as exc:
             warnings.append(
                 {
@@ -146,6 +151,236 @@ def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list
                     "message": str(exc),
                 }
             )
+    return exports, warnings
+
+
+def _reference_face(profile: Any) -> Any:
+    """Return a planar face defining ``profile``'s plane, if one is derivable.
+
+    A ``Sketch`` or ``Face`` exposes its face(s) directly. A bare planar ``Wire``
+    or ``Compound`` does not, so we try to build a face from it to recover the
+    plane; this lets a flat published on any plane be localized correctly rather
+    than only translated in z.
+    """
+
+    faces = getattr(profile, "faces", None)
+    if callable(faces):
+        candidate_faces = list(faces())
+        if candidate_faces:
+            return max(candidate_faces, key=lambda candidate: candidate.area)
+    if str(getattr(profile, "geom_type", "")).endswith("PLANE"):
+        return profile
+    try:
+        from build123d import Face
+
+        return Face(profile)
+    except Exception:
+        return None
+
+
+def _flatten_to_xy(profile: Any) -> Any:
+    """Relocate a flat profile into the global XY plane at ``z = 0``.
+
+    ``ExportDXF`` projects geometry onto the XY plane and silently drops points
+    that lie off it (it only emits a stderr warning), so a profile modeled on
+    any other plane must first be brought into local plane coordinates. We
+    localize through the profile's own plane when one is derivable and fall back
+    to a pure z-translation otherwise.
+
+    A final planarity guard refuses to return a profile whose geometry still lies
+    off the XY plane, so the caller degrades to a ``flat_export_failed`` warning
+    instead of writing a silently-degenerate DXF. This catches the two ways a
+    bad input slips through: a solid (or otherwise non-planar shape) handed to
+    ``publish_flat``, and a face-less profile on a non-XY plane that the z-only
+    fallback cannot rotate flat.
+    """
+
+    from build123d import Plane
+
+    face = _reference_face(profile)
+    flattened = None
+    if face is not None:
+        try:
+            flattened = Plane(face).to_local_coords(profile)
+        except Exception:
+            flattened = None
+    if flattened is None:
+        center = profile.center()
+        flattened = profile.translate((0, 0, -center.Z))
+
+    bbox = flattened.bounding_box()
+    if max(abs(bbox.min.Z), abs(bbox.max.Z)) > 1e-5:
+        raise ValueError("flat profile is not planar in the XY plane; cannot export a clean DXF")
+    return flattened
+
+
+def _write_dxf(
+    profile: Any,
+    layer: str,
+    target: Path,
+    *,
+    extra_layers: list[tuple[str, list[Any]]] | None = None,
+) -> None:
+    """Write one millimeter-unit DXF with ``profile`` on ``layer``.
+
+    ``ExportDXF(unit=Unit.MM)`` records ``$INSUNITS == 4`` so importers scale the
+    part correctly (D9). ``extra_layers`` is an ordered list of
+    ``(layer_name, shapes)`` so later sheet-metal work (ADR 0016) can place bend
+    lines on a separate layer through this single writer rather than forking a
+    second DXF code path.
+    """
+
+    from build123d import ExportDXF, Unit
+
+    dxf = ExportDXF(unit=Unit.MM)
+    dxf.add_layer(layer)
+    dxf.add_shape(profile, layer)
+    for extra_layer, shapes in extra_layers or []:
+        dxf.add_layer(extra_layer)
+        for shape in shapes:
+            dxf.add_shape(shape, extra_layer)
+    dxf.write(target)
+
+
+def _auto_flat_profile(obj: Any) -> tuple[Any, float | None, str | None]:
+    """Derive a flat cut profile from a constant-thickness prismatic solid.
+
+    Returns ``(profile, thickness, None)`` for an accepted prism, or
+    ``(None, None, reason)`` when the solid is not a single-thickness prism so
+    the caller can skip it with an advisory warning. Acceptance is a volume
+    invariant (``volume == largest_face_area * thickness``) rather than a fragile
+    face count, so it is robust to interior cutouts — a holed plate is still a
+    prism — and to face ordering.
+    """
+
+    from build123d import Face
+
+    try:
+        planar = [face for face in obj.faces() if str(getattr(face, "geom_type", "")).endswith("PLANE")]
+    except Exception as exc:
+        return None, None, f"object exposes no planar faces: {exc}"
+    if not planar:
+        return None, None, "no planar faces"
+
+    largest = max(planar, key=lambda face: face.area)
+    normal = largest.normal_at()
+    center = largest.center()
+
+    opposite = None
+    for face in planar:
+        if face is largest:
+            continue
+        face_normal = face.normal_at()
+        alignment = abs(
+            normal.X * face_normal.X + normal.Y * face_normal.Y + normal.Z * face_normal.Z
+        )
+        equal_area = abs(face.area - largest.area) <= 1e-4 * max(largest.area, 1.0)
+        if abs(alignment - 1.0) <= 1e-6 and equal_area:
+            opposite = face
+            break
+    if opposite is None:
+        return None, None, "no parallel equal-area face pair"
+
+    offset = opposite.center() - center
+    thickness = abs(offset.X * normal.X + offset.Y * normal.Y + offset.Z * normal.Z)
+    if thickness <= 0:
+        return None, None, "degenerate thickness"
+
+    volume = float(obj.volume)
+    if abs(volume - largest.area * thickness) > 1e-3 * max(volume, 1.0):
+        return None, None, "not a constant-thickness prism"
+
+    profile = Face(largest.outer_wire(), largest.inner_wires())
+    return profile, float(thickness), None
+
+
+def _flat_export_record(label: str, target: Path, layer: str, thickness_mm: float | None) -> dict[str, Any]:
+    """Build the diagnostics export record for a written DXF."""
+
+    return {
+        "label": label,
+        "format": "dxf",
+        "path": str(target),
+        "layer": layer,
+        "thickness_mm": thickness_mm,
+        "units": "mm",
+    }
+
+
+def _export_flats(flats: list[dict[str, Any]], run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Write a DXF for each explicit ``publish_flat`` publication.
+
+    A profile the writer cannot handle becomes a ``flat_export_failed`` warning
+    rather than a run failure, matching ``_export_build123d_object`` — structured
+    inspection of the rest of the run stays useful.
+    """
+
+    if not flats:
+        return [], []
+
+    try:
+        from build123d import ExportDXF  # noqa: F401  availability probe
+    except Exception as exc:
+        return [], [{"type": "export_dependency_missing", "message": f"build123d DXF export is unavailable: {exc}"}]
+
+    exports: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for flat in flats:
+        label = flat["label"]
+        try:
+            profile = _flatten_to_xy(flat["profile"])
+            target = run_dir / f"{label}.dxf"
+            _write_dxf(profile, flat["layer"], target)
+            exports.append(_flat_export_record(label, target, flat["layer"], flat.get("thickness_mm")))
+        except Exception as exc:
+            warnings.append({"type": "flat_export_failed", "label": label, "message": str(exc)})
+    return exports, warnings
+
+
+def _auto_export_flats(
+    published_entries: list[dict[str, Any]],
+    explicit_flat_labels: set[str],
+    run_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Auto-derive a DXF for each published constant-thickness prismatic solid.
+
+    Skips synthetic dict publications, anything already published as an explicit
+    flat, and any entry carrying an internal sheet-metal ``flat`` key (ADR 0016
+    writes that part's bend DXF elsewhere, so auto-flatten must not overwrite it).
+    A non-prismatic solid is skipped with an advisory ``autoflatten_skipped``
+    warning, never a failure: a part that cannot be flattened still inspects fine.
+    """
+
+    exports: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for entry in published_entries:
+        label = entry["label"]
+        obj = entry["object"]
+        if isinstance(obj, dict):
+            continue
+        if label in explicit_flat_labels or entry.get("flat") is not None:
+            continue
+        # Auto-flatten only applies to solids. A returned/published sketch or
+        # face (volume 0) is not a flatten candidate, so skip it silently rather
+        # than emitting a confusing ``autoflatten_skipped`` warning for an object
+        # that was never a prism in the first place.
+        try:
+            volume = float(getattr(obj, "volume", 0.0) or 0.0)
+        except Exception:
+            volume = 0.0
+        if volume <= 0:
+            continue
+        try:
+            profile, thickness, reason = _auto_flat_profile(obj)
+            if profile is None:
+                warnings.append({"type": "autoflatten_skipped", "label": label, "message": reason})
+                continue
+            flat_profile = _flatten_to_xy(profile)
+            target = run_dir / f"{label}.dxf"
+            _write_dxf(flat_profile, "cut", target)
+            exports.append(_flat_export_record(label, target, "cut", thickness))
+        except Exception as exc:
+            warnings.append({"type": "flat_export_failed", "label": label, "message": str(exc)})
     return exports, warnings
 
 
