@@ -8,7 +8,7 @@ load or visually inspect the underlying geometry.
 from __future__ import annotations
 
 from pathlib import Path
-from math import acos, degrees, sqrt
+from math import acos, atan2, degrees, sqrt
 from typing import Any
 
 import yaml
@@ -485,6 +485,169 @@ def _check_interference(spatial: dict[str, Any], check: dict[str, Any], run_dir:
     }
 
 
+def _resolve_center_of_mass(spatial: dict[str, Any], target: str) -> tuple[list[float] | None, str | None]:
+    """Resolve a center-of-mass target to a 3-vector, or an error message.
+
+    ``target`` is either the literal ``"assembly"`` (the aggregate written by the
+    inspector) or an object path such as
+    ``obj.<label>.mass_properties.center_of_mass`` resolved through the existing
+    dimension grammar.
+    """
+
+    if target == "assembly":
+        assembly = spatial.get("assembly")
+        if not assembly or "center_of_mass" not in assembly:
+            return None, "no assembly center of mass available"
+        return [float(component) for component in assembly["center_of_mass"]], None
+    try:
+        value = _resolve_dimension(spatial, target)
+    except (KeyError, ValueError) as exc:
+        return None, f"could not resolve center of mass target {target!r}: {exc}"
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None, f"center of mass target {target!r} is not a 3-vector"
+    return [float(component) for component in value], None
+
+
+def _check_center_of_mass(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Assert a center of mass against a target point or an axis-aligned region."""
+
+    observed, error = _resolve_center_of_mass(spatial, check.get("target", "assembly"))
+    tolerance = check.get("tolerance", 0)
+    if error is not None:
+        return {"id": check["id"], "type": "center_of_mass", "status": "fail", "error": error, "tolerance": tolerance}
+
+    if "region" in check:
+        region = check["region"]
+        passed = all(region["min"][axis] <= observed[axis] <= region["max"][axis] for axis in range(3))
+        expected: Any = region
+    else:
+        expected = [float(component) for component in check["expected"]]
+        passed = all(abs(observed[axis] - expected[axis]) <= float(tolerance) for axis in range(3))
+
+    return {
+        "id": check["id"],
+        "type": "center_of_mass",
+        "status": "pass" if passed else "fail",
+        "observed": observed,
+        "expected": expected,
+        "tolerance": tolerance,
+    }
+
+
+def _convex_hull(points: list[list[float]]) -> list[list[float]]:
+    """Monotone-chain convex hull of 2D points (counter-clockwise).
+
+    Deterministic and tolerant of duplicate/collinear input. A support footprint
+    is supplied unordered, so the hull both orders it and discards any concave
+    indentation (conservative: it can only widen the base).
+    """
+
+    unique = sorted({(float(point[0]), float(point[1])) for point in points})
+    if len(unique) <= 2:
+        return [list(point) for point in unique]
+
+    def cross(origin: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - origin[0]) * (b[1] - origin[1]) - (a[1] - origin[1]) * (b[0] - origin[0])
+
+    lower: list[tuple[float, float]] = []
+    for point in unique:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 0:
+            lower.pop()
+        lower.append(point)
+    upper: list[tuple[float, float]] = []
+    for point in reversed(unique):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 0:
+            upper.pop()
+        upper.append(point)
+    return [list(point) for point in lower[:-1] + upper[:-1]]
+
+
+def _point_in_polygon(point: list[float], polygon: list[list[float]]) -> bool:
+    """Even-odd ray-cast test for a point inside a 2D polygon."""
+
+    x, y = point[0], point[1]
+    inside = False
+    count = len(polygon)
+    previous = count - 1
+    for current in range(count):
+        xi, yi = polygon[current]
+        xj, yj = polygon[previous]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / (yj - yi) + xi:
+            inside = not inside
+        previous = current
+    return inside
+
+
+def _point_segment_distance(point: list[float], start: list[float], end: list[float]) -> float:
+    """Shortest distance from a point to a 2D line segment."""
+
+    px, py = point[0], point[1]
+    ax, ay = start[0], start[1]
+    bx, by = end[0], end[1]
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return sqrt((px - ax) ** 2 + (py - ay) ** 2)
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    cx, cy = ax + t * dx, ay + t * dy
+    return sqrt((px - cx) ** 2 + (py - cy) ** 2)
+
+
+def _signed_margin(point: list[float], polygon: list[list[float]]) -> float:
+    """Signed distance from ``point`` to the polygon boundary, positive inside.
+
+    A degenerate support (a single point or a line) cannot contain a projected
+    center of mass, so the margin is the negative distance to it (always unstable).
+    """
+
+    if not polygon:
+        return float("-inf")
+    if len(polygon) == 1:
+        return -sqrt((point[0] - polygon[0][0]) ** 2 + (point[1] - polygon[0][1]) ** 2)
+    if len(polygon) == 2:
+        return -_point_segment_distance(point, polygon[0], polygon[1])
+    distance = min(
+        _point_segment_distance(point, polygon[index], polygon[(index + 1) % len(polygon)])
+        for index in range(len(polygon))
+    )
+    return distance if _point_in_polygon(point, polygon) else -distance
+
+
+def _check_stability(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Assert a center of mass projects inside its support polygon.
+
+    The projected (x, y) center of mass must sit inside the convex hull of the
+    support points by at least ``min_margin``. When ``com_height`` is supplied the
+    worst-case tip angle ``atan2(margin, com_height)`` is reported and can be
+    gated with ``min_tip_angle_deg``.
+    """
+
+    observed_com, error = _resolve_center_of_mass(spatial, check.get("target", "assembly"))
+    if error is not None:
+        return {"id": check["id"], "type": "stability", "status": "fail", "error": error}
+
+    point = [observed_com[0], observed_com[1]]
+    hull = _convex_hull(check["support"])
+    margin = _signed_margin(point, hull)
+    passed = margin >= float(check.get("min_margin", 0.0))
+
+    result: dict[str, Any] = {
+        "id": check["id"],
+        "type": "stability",
+        "observed": point,
+        "margin": margin,
+        "support": hull,
+    }
+    com_height = check.get("com_height")
+    if com_height is not None and float(com_height) > 0:
+        tip_angle_deg = degrees(atan2(margin, float(com_height)))
+        result["tip_angle_deg"] = tip_angle_deg
+        if "min_tip_angle_deg" in check:
+            passed = passed and tip_angle_deg >= float(check["min_tip_angle_deg"])
+    result["status"] = "pass" if passed else "fail"
+    return result
+
+
 def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     """Route a requirement entry to its evaluator."""
 
@@ -505,6 +668,10 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Pat
         return _check_feature_alignment(spatial, check)
     if check_type == "interference":
         return _check_interference(spatial, check, run_dir)
+    if check_type == "center_of_mass":
+        return _check_center_of_mass(spatial, check)
+    if check_type == "stability":
+        return _check_stability(spatial, check)
     raise ValueError(f"unsupported check type {check_type!r}")
 
 

@@ -40,6 +40,12 @@ CLI is the agent-facing interface. Those tests exercise:
   bolt-pattern holes and synthetic features; `interference` via BREP intersection
   volume (overlap vs separated) and the AABB fallback with a `between` subset; and
   the dedup guard that keeps coaxial holes on different stacked parts distinct.
+- Center of mass, inertia, and stability (ADR 0015): per-part `center_of_mass`
+  (off-origin centroid) and `matrix_of_inertia` on real solids plus the
+  kernel-free omission path; mass- and volume-weighted assembly aggregation and
+  the mixed-density volume fallback; the `center_of_mass` check (point, region,
+  object target, missing-assembly error); and the `stability` check (inside,
+  outside with negative margin, tip-angle gating, degenerate support).
 
 Known gaps:
 

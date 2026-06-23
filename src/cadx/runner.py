@@ -69,6 +69,33 @@ def _count_selector(obj: Any, name: str) -> int | None:
         return None
 
 
+def _mass_properties(obj: Any) -> dict[str, Any]:
+    """Compute JSON-safe mass properties for a real build123d solid.
+
+    ``volume`` and ``area`` are always attempted; ``center_of_mass`` and
+    ``matrix_of_inertia`` (both from build123d, the latter a property about the
+    part centroid in model units) are added when available. Each addition is
+    guarded so a shape that cannot produce one — or a kernel-free environment —
+    simply omits the key rather than failing the run.
+    """
+
+    properties: dict[str, Any] = {
+        "volume": getattr(obj, "volume", None),
+        "area": getattr(obj, "area", None),
+    }
+    try:
+        from build123d import CenterOf
+
+        properties["center_of_mass"] = _vector_from(obj.center(CenterOf.MASS))
+    except Exception:
+        pass
+    try:
+        properties["matrix_of_inertia"] = [[float(component) for component in row] for row in obj.matrix_of_inertia]
+    except Exception:
+        pass
+    return properties
+
+
 def _placed_object(entry: dict[str, Any]) -> Any:
     """Return the published shape moved into its assembly placement, if any.
 
@@ -157,10 +184,7 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
         bbox = _normalize_bbox(bbox_method() if callable(bbox_method) else getattr(placed, "bbox", {}))
         normalized = {
             "bbox": bbox,
-            "mass_properties": {
-                "volume": getattr(placed, "volume", None),
-                "area": getattr(placed, "area", None),
-            },
+            "mass_properties": _mass_properties(placed),
             "topology": {
                 "solids": _count_selector(placed, "solids"),
                 "faces": _count_selector(placed, "faces"),

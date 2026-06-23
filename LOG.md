@@ -132,3 +132,16 @@
   guarded `_is_duplicate` so features on different `source_object`s never merge.
   Also made `feature_alignment` pair the best-aligned holes (build123d STEP face
   order is not translation-invariant). Full suite passed with `46 passed`.
+- Reviewed ADR 0014; fixed `interference`/`feature_alignment` to return
+  descriptive errors instead of `KeyError`/vacuous self-pass on bad selectors.
+  Merged ADR 0014 to `master` (`48 passed`), branch preserved.
+- Started ADR 0015 on `claude/adr-0015-center-of-mass`.
+- Confirmed ADR 0015 red state: no `center_of_mass`/`matrix_of_inertia` in
+  `mass_properties`, no `assembly` key, `center_of_mass`/`stability` unsupported.
+- Implemented `runner._mass_properties` (center of mass + inertia on the placed
+  object), `inspector._assembly_center_of_mass` (mass- or volume-weighted), and
+  `center_of_mass` + `stability` evaluate checks (convex-hull support polygon,
+  signed margin, tip angle). Review-driven fixes: mixed-density assemblies weight
+  by volume (no unit-inconsistent hybrid), degenerate-support and kernel-free
+  paths tested, `center_of_mass` target defaults to `assembly`. Merged ADR 0015
+  to `master` with `60 passed`.

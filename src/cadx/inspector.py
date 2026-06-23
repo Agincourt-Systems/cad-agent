@@ -351,6 +351,61 @@ def _merge_features(
     return merged
 
 
+def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Mass-weighted center of mass across published part-role objects.
+
+    Each contributing part needs a positive ``mass_properties.volume`` and a
+    3-vector ``mass_properties.center_of_mass``. A part's weight is
+    ``density * volume`` when a positive ``metadata.density`` is present, else its
+    volume (a uniform-density approximation). Weighting is reported as ``"mass"``
+    only when *every* contributing part supplied a positive density, otherwise
+    ``"volume"`` — so a uniform-density guess is never silently presented as a
+    true mass center. ADR 0017's part metadata supplies real densities later;
+    until then this degrades gracefully. Returns ``None`` when no part qualifies.
+    """
+
+    # First pass: collect qualifying parts with their volume, centroid, and any
+    # positive density.
+    qualifying: list[tuple[float, list[float], float | None]] = []
+    for obj in objects:
+        if obj.get("role", "part") != "part":
+            continue
+        mass_properties = obj.get("mass_properties", {})
+        volume = mass_properties.get("volume")
+        center = _coerce_point(mass_properties.get("center_of_mass"))
+        if not isinstance(volume, (int, float)) or volume <= 0 or center is None:
+            continue
+        density = obj.get("metadata", {}).get("density")
+        density = float(density) if isinstance(density, (int, float)) and density > 0 else None
+        qualifying.append((float(volume), center, density))
+
+    if not qualifying:
+        return None
+
+    # Mass-weight only when EVERY part supplied a positive density. In any mixed
+    # or absent-density case, weight purely by volume so the result is a
+    # consistent uniform-density centroid rather than a unit-inconsistent hybrid
+    # of mass weights and volume weights.
+    all_have_density = all(density is not None for _, _, density in qualifying)
+    contributions = [
+        (volume * density if all_have_density else volume, center)
+        for volume, center, density in qualifying
+    ]
+    total = sum(weight for weight, _ in contributions)
+    if total <= 0:
+        return None
+    center_of_mass = [
+        sum(weight * center[axis] for weight, center in contributions) / total
+        for axis in range(3)
+    ]
+    return {
+        "center_of_mass": center_of_mass,
+        "mass": total,
+        "weighting": "mass" if all_have_density else "volume",
+        "part_count": len(contributions),
+    }
+
+
 def inspect_run(run_dir: Path) -> dict[str, Any]:
     """Write ``spatial.json`` for a run and return a compact summary."""
 
@@ -366,6 +421,9 @@ def inspect_run(run_dir: Path) -> dict[str, Any]:
         "objects": objects,
         "features": features,
     }
+    assembly = _assembly_center_of_mass(objects)
+    if assembly is not None:
+        spatial["assembly"] = assembly
     write_json(run_dir / "spatial.json", spatial)
     return {
         "status": "ok",
