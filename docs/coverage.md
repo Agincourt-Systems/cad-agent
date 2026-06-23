@@ -28,9 +28,18 @@ CLI is the agent-facing interface. Those tests exercise:
 - DXF flat-pattern export (ADR 0013): explicit `publish_flat` profiles and
   auto-flattened constant-thickness prisms emit SendCutSend-clean millimeter
   DXF, parsed back with `ezdxf` for outline/hole/units assertions; the
-  prism-detector accept/reject decisions, the `flat_export_failed` and
-  `autoflatten_skipped` warning paths, the explicit/sheet-metal auto-flatten
-  skips, and the `units:"mm"` field on every step/stl/glb/dxf export record.
+  prism-detector accept/reject decisions, the `flat_export_failed` (including the
+  non-planar-profile guard) and `autoflatten_skipped` warning paths, the
+  explicit/sheet-metal/non-solid auto-flatten skips, off-plane profile
+  localization, and the `units:"mm"` field on every step/stl/glb/dxf export
+  record.
+- Assembly placement and cross-part checks (ADR 0014): `publish(..., placement=)`
+  applied to real shapes and synthetic dict bboxes with the placement recorded on
+  the spatial object; `feature_alignment` best-pair matching (pass and fail
+  naming feature ids and offset, plus a missing-selector error) on detected
+  bolt-pattern holes and synthetic features; `interference` via BREP intersection
+  volume (overlap vs separated) and the AABB fallback with a `between` subset; and
+  the dedup guard that keeps coaxial holes on different stacked parts distinct.
 
 Known gaps:
 

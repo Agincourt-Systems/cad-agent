@@ -8,7 +8,7 @@ load or visually inspect the underlying geometry.
 from __future__ import annotations
 
 from pathlib import Path
-from math import sqrt
+from math import acos, degrees, sqrt
 from typing import Any
 
 import yaml
@@ -262,6 +262,229 @@ def _check_feature_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> 
     }
 
 
+def _resolve_features(spatial: dict[str, Any], selector: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    """Resolve a feature selector to all matching features, or an error message.
+
+    A selector is either ``{"id": "feat.x"}`` (exact id) or a
+    ``{"kind": ..., "source_object": "obj.label"}`` filter. The alignment check
+    consumes the full match list so it can pair the best-aligned features rather
+    than relying on detection order being identical across parts.
+    """
+
+    features = spatial.get("features", [])
+    if "id" in selector:
+        matches = [feature for feature in features if feature.get("id") == selector["id"]]
+        return matches, None if matches else f"no feature with id {selector['id']!r}"
+
+    kind = selector.get("kind")
+    source = selector.get("source_object")
+    matches = [
+        feature
+        for feature in features
+        if (kind is None or feature.get("kind") == kind)
+        and (source is None or feature.get("source_object") == source)
+    ]
+    return matches, None if matches else f"no feature matching {selector!r}"
+
+
+def _unit_vector(vector: list[float]) -> list[float]:
+    """Return a unit vector, preserving the zero vector."""
+
+    length = sqrt(sum(component * component for component in vector))
+    if length == 0:
+        return [0.0, 0.0, 0.0]
+    return [component / length for component in vector]
+
+
+def _axis_alignment(feature_a: dict[str, Any], feature_b: dict[str, Any]) -> tuple[float, float]:
+    """Return ``(axis_offset, axis_angle_deg)`` for two cylindrical features.
+
+    ``axis_offset`` is the perpendicular distance between the two axis lines
+    measured at their published centers (the component of the center-to-center
+    vector that is perpendicular to the first axis); ``axis_angle_deg`` is the
+    angle between the axis directions, with anti-parallel treated as aligned.
+    Two coaxial holes give ``(0, 0)`` regardless of where along the axis their
+    centers were published.
+    """
+
+    center_a = [float(c) for c in feature_a["center"]]
+    center_b = [float(c) for c in feature_b["center"]]
+    axis_a = _unit_vector([float(c) for c in feature_a["axis"]])
+    axis_b = _unit_vector([float(c) for c in feature_b["axis"]])
+
+    dot = min(1.0, max(-1.0, abs(sum(a * b for a, b in zip(axis_a, axis_b)))))
+    angle = degrees(acos(dot))
+
+    between = [b - a for a, b in zip(center_a, center_b)]
+    along = sum(component * axis for component, axis in zip(between, axis_a))
+    perpendicular_squared = sum(component * component for component in between) - along * along
+    offset = sqrt(max(perpendicular_squared, 0.0))
+    return offset, angle
+
+
+def _check_feature_alignment(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Assert two features are coaxial and diameter-compatible within tolerance."""
+
+    selector_a, selector_b = check["features"]
+    features_a, error_a = _resolve_features(spatial, selector_a)
+    features_b, error_b = _resolve_features(spatial, selector_b)
+    tolerance = float(check.get("tolerance", 0))
+    diameter_tolerance = float(check.get("diameter_tolerance", tolerance))
+
+    if not features_a or not features_b:
+        return {
+            "id": check["id"],
+            "type": "feature_alignment",
+            "status": "fail",
+            "error": error_a or error_b,
+            "features": [selector_a.get("id"), selector_b.get("id")],
+            "tolerance": tolerance,
+        }
+
+    # When a selector matches several features (e.g. a whole bolt pattern), pair
+    # the closest-to-coaxial features. This asks "does each hole on A have a
+    # coaxial partner on B" without depending on the two parts' holes being
+    # detected in the same order. A feature is never paired with itself, so a
+    # too-broad selector that resolves both sides to the same feature cannot
+    # produce a vacuous self-aligned pass.
+    pairings = [
+        (candidate_a, candidate_b, *_axis_alignment(candidate_a, candidate_b))
+        for candidate_a in features_a
+        for candidate_b in features_b
+        if candidate_a is not candidate_b
+    ]
+    if not pairings:
+        return {
+            "id": check["id"],
+            "type": "feature_alignment",
+            "status": "fail",
+            "error": "the two selectors resolve to the same feature; nothing to align",
+            "features": [features_a[0].get("id"), features_a[0].get("id")],
+            "tolerance": tolerance,
+        }
+    feature_a, feature_b, axis_offset, axis_angle_deg = min(
+        pairings, key=lambda pairing: (pairing[2], pairing[3])
+    )
+    diameter_a = feature_a.get("diameter")
+    diameter_b = feature_b.get("diameter")
+    diameter_ok = True
+    if diameter_a is not None and diameter_b is not None:
+        diameter_ok = abs(float(diameter_a) - float(diameter_b)) <= diameter_tolerance
+
+    passed = axis_offset <= tolerance and axis_angle_deg <= tolerance and diameter_ok
+    return {
+        "id": check["id"],
+        "type": "feature_alignment",
+        "status": "pass" if passed else "fail",
+        "features": [feature_a["id"], feature_b["id"]],
+        "axis_offset": axis_offset,
+        "axis_angle_deg": axis_angle_deg,
+        "diameters": [diameter_a, diameter_b],
+        "tolerance": tolerance,
+        "diameter_tolerance": diameter_tolerance,
+    }
+
+
+def _aabb_overlaps(left_bbox: dict[str, list[float]], right_bbox: dict[str, list[float]]) -> bool:
+    """Whether two axis-aligned bounding boxes overlap with positive penetration."""
+
+    for axis in range(3):
+        if left_bbox["max"][axis] <= right_bbox["min"][axis]:
+            return False
+        if right_bbox["max"][axis] <= left_bbox["min"][axis]:
+            return False
+    return True
+
+
+def _interference_objects(
+    spatial: dict[str, Any], check: dict[str, Any]
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Select the objects an interference check ranges over.
+
+    Returns ``(objects, None)`` for a valid selection, or ``(None, error)`` when
+    a ``between`` reference names an object that does not exist, so the check can
+    report a descriptive failure instead of raising (matching
+    ``feature_alignment``).
+    """
+
+    objects = spatial.get("objects", [])
+    if "between" not in check:
+        return objects, None
+    index = _object_index(spatial)
+    selected: list[dict[str, Any]] = []
+    for ref in check["between"]:
+        label = _label_from_ref(ref)
+        if label not in index:
+            return None, f"no object {ref!r}"
+        selected.append(index[label])
+    return selected, None
+
+
+def _check_interference(spatial: dict[str, Any], check: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+    """Flag every pair of solids that overlaps in the assembly frame.
+
+    Exact BREP intersection volume is used when per-object STEP exports exist
+    (``distance()`` cannot distinguish a true overlap from a face-to-face touch —
+    both are 0). A synthetic publication with no STEP falls back to AABB overlap
+    so evaluator logic stays testable without a CAD kernel.
+    """
+
+    tolerance = float(check.get("tolerance", 1e-6))
+    selected, error = _interference_objects(spatial, check)
+    if error is not None:
+        return {
+            "id": check["id"],
+            "type": "interference",
+            "status": "fail",
+            "error": error,
+            "pairs": [],
+            "overlaps": [],
+            "tolerance": tolerance,
+        }
+    try:
+        step_index = _step_export_index(run_dir)
+    except Exception:
+        step_index = {}
+
+    use_exact = len(selected) >= 2 and all(obj["label"] in step_index for obj in selected)
+    pairs: list[list[str]] = []
+    overlaps: list[dict[str, Any]] = []
+
+    if use_exact:
+        from build123d import import_step
+
+        shapes = {obj["label"]: import_step(step_index[obj["label"]]) for obj in selected}
+        for left_index in range(len(selected)):
+            for right_index in range(left_index + 1, len(selected)):
+                left_label = selected[left_index]["label"]
+                right_label = selected[right_index]["label"]
+                try:
+                    intersection = shapes[left_label].intersect(shapes[right_label])
+                    volume = float(intersection.volume) if intersection is not None else 0.0
+                except Exception:
+                    volume = 0.0
+                if volume > tolerance:
+                    pairs.append([left_label, right_label])
+                    overlaps.append({"labels": [left_label, right_label], "volume": volume})
+    else:
+        for left_index in range(len(selected)):
+            for right_index in range(left_index + 1, len(selected)):
+                left = selected[left_index]
+                right = selected[right_index]
+                if _aabb_overlaps(left["bbox"], right["bbox"]):
+                    pairs.append([left["label"], right["label"]])
+                    overlaps.append({"labels": [left["label"], right["label"]], "volume": None})
+
+    return {
+        "id": check["id"],
+        "type": "interference",
+        "status": "pass" if not pairs else "fail",
+        "pairs": pairs,
+        "overlaps": overlaps,
+        "tolerance": tolerance,
+    }
+
+
 def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     """Route a requirement entry to its evaluator."""
 
@@ -278,6 +501,10 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Pat
         return _check_feature_count(spatial, check)
     if check_type == "feature_dimension":
         return _check_feature_dimension(spatial, check)
+    if check_type == "feature_alignment":
+        return _check_feature_alignment(spatial, check)
+    if check_type == "interference":
+        return _check_interference(spatial, check, run_dir)
     raise ValueError(f"unsupported check type {check_type!r}")
 
 

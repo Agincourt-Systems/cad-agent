@@ -115,3 +115,20 @@
   detector, and `unit=Unit.MM` + `units:"mm"` on every export record (D9).
   Updated the ADR 0002 integration test for the intentionally extended export
   contract (`{step,stl,glb,dxf}`). Full suite passed with `34 passed`.
+- Adversarial review of the ADR 0013 diff drove three fixes before merge: a
+  planarity guard so a non-planar `publish_flat` profile degrades to a
+  `flat_export_failed` warning instead of a silently-degenerate DXF, an
+  arc-aware closed-loop test for fillet-cornered outlines, and a silent skip of
+  auto-flatten for non-solid (`result` sketch) publications. Merged ADR 0013 to
+  `master` (`37 passed`) and preserved the branch.
+- Started ADR 0014 on `claude/adr-0014-assembly-placement`.
+- Confirmed ADR 0014 red state: `publish` ignored `placement` and
+  `feature_alignment`/`interference` were unsupported check types.
+- Implemented `publish(..., placement=Location)` applied through a shared
+  `runner._placed_object` helper (reused by ADR 0015), placement recorded on
+  spatial objects, and `feature_alignment` + `interference` evaluate checks.
+  Discovered and fixed a cross-ADR bug: ADR 0012's radial dedup collapsed
+  coaxial holes from two *stacked* plates into one, deleting plate B's holes;
+  guarded `_is_duplicate` so features on different `source_object`s never merge.
+  Also made `feature_alignment` pair the best-aligned holes (build123d STEP face
+  order is not translation-invariant). Full suite passed with `46 passed`.

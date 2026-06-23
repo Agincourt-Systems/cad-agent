@@ -309,6 +309,16 @@ def _is_duplicate(explicit: dict[str, Any], detected: dict[str, Any]) -> bool:
 
     if explicit.get("kind") != detected.get("kind"):
         return False
+    # Features that name different source objects are physically distinct parts'
+    # features and must never be merged, even when coaxial. Two plates stacked
+    # for bolting (ADR 0014) have aligned holes whose axes coincide, so the
+    # axis-line matching below would otherwise collapse one part's holes into the
+    # other's. An explicit publication without a source_object is unconstrained
+    # here so ADR 0012's explicit/detected corroboration still applies.
+    explicit_source = explicit.get("source_object")
+    detected_source = detected.get("source_object")
+    if explicit_source is not None and detected_source is not None and explicit_source != detected_source:
+        return False
     explicit_center = _coerce_point(explicit.get("center"))
     detected_center = _coerce_point(detected.get("center"))
     if explicit_center is None or detected_center is None:

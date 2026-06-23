@@ -69,27 +69,103 @@ def _count_selector(obj: Any, name: str) -> int | None:
         return None
 
 
+def _placed_object(entry: dict[str, Any]) -> Any:
+    """Return the published shape moved into its assembly placement, if any.
+
+    Centralizing the placement transform here keeps bounding box, mass
+    properties, exports, and STEP-backed feature detection all observing the
+    *same* placed geometry, so cross-part checks (hole alignment, interference)
+    reason in one assembly frame. Synthetic dict publications and unplaced
+    objects are returned unchanged. ADR 0015 reuses this helper so center of mass
+    is reported in the same frame as the bounding box.
+    """
+
+    obj = entry["object"]
+    placement = entry.get("placement")
+    if placement is None or isinstance(obj, dict):
+        return obj
+    located = getattr(obj, "located", None)
+    if not callable(located):
+        return obj
+    try:
+        return located(placement)
+    except Exception:
+        return obj
+
+
+def _placement_position(placement: Any) -> list[float] | None:
+    """Extract a ``[x, y, z]`` translation from a Location or plain mapping.
+
+    Accepts a build123d ``Location`` (``placement.position``), a
+    ``{"position": [...]}`` mapping, or a bare 3-sequence so that kernel-free
+    synthetic publications can be placed in tests without build123d.
+    """
+
+    if placement is None:
+        return None
+    position = getattr(placement, "position", None)
+    if position is not None:
+        return _vector_from(position)
+    if isinstance(placement, dict) and "position" in placement:
+        return [float(component) for component in placement["position"]]
+    if isinstance(placement, (list, tuple)) and len(placement) == 3:
+        return [float(component) for component in placement]
+    return None
+
+
+def _placement_record(placement: Any) -> dict[str, list[float]] | None:
+    """Build the JSON ``{"position", "orientation"}`` record for a placement."""
+
+    position = _placement_position(placement)
+    if position is None:
+        return None
+    orientation = getattr(placement, "orientation", None)
+    if orientation is not None:
+        orientation = _vector_from(orientation)
+    elif isinstance(placement, dict):
+        orientation = [float(component) for component in placement.get("orientation", [0.0, 0.0, 0.0])]
+    else:
+        orientation = [0.0, 0.0, 0.0]
+    return {"position": position, "orientation": orientation}
+
+
+def _translate_bbox(bbox: dict[str, list[float]], position: list[float]) -> dict[str, list[float]]:
+    """Shift a synthetic bounding box by a placement translation."""
+
+    shifted = dict(bbox)
+    if "min" in bbox and "max" in bbox:
+        shifted["min"] = [value + offset for value, offset in zip(bbox["min"], position)]
+        shifted["max"] = [value + offset for value, offset in zip(bbox["max"], position)]
+        shifted["size"] = [high - low for low, high in zip(shifted["min"], shifted["max"])]
+    return shifted
+
+
 def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
     """Convert a registry publication to JSON-safe spatial facts."""
 
     label = entry["label"]
     obj = entry["object"]
+    placement = entry.get("placement")
     if isinstance(obj, dict):
         normalized = dict(obj)
+        position = _placement_position(placement)
+        if position is not None and "bbox" in normalized:
+            normalized["bbox"] = _translate_bbox(normalized["bbox"], position)
     else:
-        bbox_method = getattr(obj, "bounding_box", None)
-        bbox = _normalize_bbox(bbox_method() if callable(bbox_method) else getattr(obj, "bbox", {}))
+        placed = _placed_object(entry)
+        bbox_method = getattr(placed, "bounding_box", None)
+        bbox = _normalize_bbox(bbox_method() if callable(bbox_method) else getattr(placed, "bbox", {}))
         normalized = {
             "bbox": bbox,
             "mass_properties": {
-                "volume": getattr(obj, "volume", None),
-                "area": getattr(obj, "area", None),
+                "volume": getattr(placed, "volume", None),
+                "area": getattr(placed, "area", None),
             },
             "topology": {
-                "solids": _count_selector(obj, "solids"),
-                "faces": _count_selector(obj, "faces"),
-                "edges": _count_selector(obj, "edges"),
-                "vertices": _count_selector(obj, "vertices"),
+                "solids": _count_selector(placed, "solids"),
+                "faces": _count_selector(placed, "faces"),
+                "edges": _count_selector(placed, "edges"),
+                "vertices": _count_selector(placed, "vertices"),
             },
         }
 
@@ -100,6 +176,9 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
         normalized["metadata"] = entry["metadata"]
     if "bbox" in normalized:
         normalized["bbox"] = _normalize_bbox(normalized["bbox"])
+    placement_record = _placement_record(placement)
+    if placement_record is not None:
+        normalized["placement"] = placement_record
     return normalized
 
 
@@ -111,7 +190,7 @@ def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list
     inspection may still be useful to the agent.
     """
 
-    obj = entry["object"]
+    obj = _placed_object(entry)
     if isinstance(obj, dict):
         return [], []
 
@@ -355,7 +434,7 @@ def _auto_export_flats(
     warnings: list[dict[str, Any]] = []
     for entry in published_entries:
         label = entry["label"]
-        obj = entry["object"]
+        obj = _placed_object(entry)
         if isinstance(obj, dict):
             continue
         if label in explicit_flat_labels or entry.get("flat") is not None:

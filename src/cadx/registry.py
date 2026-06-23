@@ -25,15 +25,20 @@ def clear_registry() -> None:
     _FLATS.clear()
 
 
-def publish(label: str, obj: Any, role: str = "part", **metadata: Any) -> None:
+def publish(label: str, obj: Any, role: str = "part", placement: Any = None, **metadata: Any) -> None:
     """Publish a named object for inspection and export.
 
     ``obj`` may be a real build123d shape or a dictionary containing already
     normalized geometry facts. The dictionary form keeps unit tests independent
     from a full CAD kernel installation.
+
+    ``placement`` is an optional build123d ``Location`` that positions the part
+    in a common assembly frame. When supplied, the harness applies it before
+    computing bounding boxes, mass properties, and exports, so cross-part checks
+    (hole alignment, interference) observe every part in one coordinate system.
     """
 
-    _PUBLISHED.append({"label": label, "role": role, "object": obj, "metadata": metadata})
+    _PUBLISHED.append({"label": label, "role": role, "object": obj, "placement": placement, "metadata": metadata})
 
 
 def publish_flat(label: str, profile: Any, *, layer: str = "cut", thickness_mm: float | None = None, **meta: Any) -> None:
@@ -80,6 +85,9 @@ def snapshot_registry() -> dict[str, Any]:
             "label": entry["label"],
             "role": entry["role"],
             "object": entry["object"],
+            # The Location is carried by reference like the object: it wraps an
+            # Open Cascade transform that is not deepcopy-safe.
+            "placement": entry.get("placement"),
             "metadata": deepcopy(entry["metadata"]),
         }
         for entry in _PUBLISHED
