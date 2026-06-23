@@ -46,6 +46,12 @@ CLI is the agent-facing interface. Those tests exercise:
   the mixed-density volume fallback; the `center_of_mass` check (point, region,
   object target, missing-assembly error); and the `stability` check (inside,
   outside with negative margin, tip-angle gating, degenerate support).
+- Sheet-metal bends (ADR 0016): `bend()` developed-length arithmetic and flat
+  profile, the 90° two-box folded envelope for both up and down directions, the
+  non-right-angle rotated solid, input validation, the combined cut+bend DXF
+  (parsed with `ezdxf` for per-layer entity counts and the bend-line location),
+  the single aggregated `bends.json` across multiple bent parts, and the `bend`
+  evaluate check (pass, fail, missing-table).
 
 Known gaps:
 

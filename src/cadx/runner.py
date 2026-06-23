@@ -487,6 +487,69 @@ def _auto_export_flats(
     return exports, warnings
 
 
+def _export_sheet_metal(entry: dict[str, Any], run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Export one sheet-metal part's flat DXF (cut + bend layers).
+
+    Reuses the ADR 0013 ``_write_dxf`` writer, passing the bend lines through its
+    ``extra_layers`` hook so the cut outline and the bend lines share one DXF on
+    separate layers. The sheet-metal profile and bend lines are built in the XY
+    plane by ``bend()``, so no plane localization is applied — that keeps the bend
+    lines in exact register with the cut outline. The bend *table* is written
+    separately (once per run) by ``_export_bend_table``.
+    """
+
+    flat = entry.get("flat")
+    if not flat:
+        return [], []
+
+    label = entry["label"]
+    try:
+        from build123d import ExportDXF  # noqa: F401  availability probe
+    except Exception as exc:
+        return [], [{"type": "export_dependency_missing", "message": f"build123d DXF export is unavailable: {exc}"}]
+
+    bend_lines = flat.get("bend_lines") or []
+    try:
+        target = run_dir / f"{label}.dxf"
+        extra_layers = [("bend", bend_lines)] if bend_lines else None
+        _write_dxf(flat["profile"], flat["layer"], target, extra_layers=extra_layers)
+        record = _flat_export_record(label, target, flat["layer"], None)
+        if bend_lines:
+            record["layers"] = [flat["layer"], "bend"]
+        return [record], []
+    except Exception as exc:
+        return [], [{"type": "flat_export_failed", "label": label, "message": str(exc)}]
+
+
+def _export_bend_table(
+    sheet_metal_entries: list[dict[str, Any]], run_dir: Path
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Write a single ``bends.json`` aggregating every sheet-metal part's bends.
+
+    One run can publish several bent parts, so the bend table is written once per
+    run with each row tagged by its part ``label`` (rather than one file per part
+    that would clobber the previous). A single ``format:"bends"`` export record
+    points at the aggregate.
+    """
+
+    rows: list[dict[str, Any]] = []
+    for entry in sheet_metal_entries:
+        flat = entry.get("flat")
+        if not flat:
+            continue
+        for row in flat.get("bends", []):
+            rows.append({**row, "label": entry["label"]})
+    if not rows:
+        return [], []
+
+    try:
+        bends_path = run_dir / "bends.json"
+        write_json(bends_path, {"schema_version": "1.0", "units": "mm", "bends": rows})
+        return [{"label": None, "format": "bends", "path": str(bends_path), "units": "mm"}], []
+    except Exception as exc:
+        return [], [{"type": "bend_table_failed", "message": str(exc)}]
+
+
 def _runtime_metadata() -> dict[str, Any]:
     """Capture runtime versions that affect reproducibility."""
 

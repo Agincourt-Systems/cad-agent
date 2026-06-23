@@ -16,8 +16,10 @@ from cadx.files import load_yaml, write_json
 from cadx.runner import (
     _auto_export_flats,
     _execute_design,
+    _export_bend_table,
     _export_build123d_object,
     _export_flats,
+    _export_sheet_metal,
     _normalize_published,
     _runtime_metadata,
 )
@@ -82,6 +84,18 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
         exports.extend(auto_exports)
         warnings.extend(flat_warnings)
         warnings.extend(auto_warnings)
+
+        # ADR 0016: sheet-metal parts emit a combined cut+bend DXF each, plus one
+        # aggregated bends.json bend table for the whole run. Their internal
+        # "flat" key already made auto-flatten skip them.
+        sheet_metal_entries = [entry for entry in raw_registry["published"] if entry.get("flat")]
+        for entry in sheet_metal_entries:
+            sheet_exports, sheet_warnings = _export_sheet_metal(entry, run_dir)
+            exports.extend(sheet_exports)
+            warnings.extend(sheet_warnings)
+        bend_table_exports, bend_table_warnings = _export_bend_table(sheet_metal_entries, run_dir)
+        exports.extend(bend_table_exports)
+        warnings.extend(bend_table_warnings)
 
         diagnostics = {
             "schema_version": "1.0",

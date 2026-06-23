@@ -648,6 +648,50 @@ def _check_stability(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str
     return result
 
 
+def _check_bend(run_dir: Path, check: dict[str, Any]) -> dict[str, Any]:
+    """Assert sheet-metal bends from ``bends.json`` (ADR 0016).
+
+    Optional clauses: ``count`` (exact bend count), and ``angle`` /
+    ``inside_radius`` / ``direction`` which require at least one bend matching the
+    value (numeric clauses within ``tolerance``). A run with no bend table fails
+    with a descriptive error rather than raising.
+    """
+
+    try:
+        table = read_json(run_dir / "bends.json")
+    except Exception as exc:
+        return {
+            "id": check["id"],
+            "type": "bend",
+            "status": "fail",
+            "error": f"no bend table: {exc}",
+            "observed": {"count": 0, "bends": []},
+        }
+
+    bends = table.get("bends", [])
+    tolerance = float(check.get("tolerance", 0))
+    passed = True
+    if "count" in check:
+        passed = passed and len(bends) == check["count"]
+    if "angle" in check:
+        passed = passed and any(abs(float(bend.get("angle", 0)) - float(check["angle"])) <= tolerance for bend in bends)
+    if "inside_radius" in check:
+        passed = passed and any(
+            abs(float(bend.get("inside_radius", 0)) - float(check["inside_radius"])) <= tolerance for bend in bends
+        )
+    if "direction" in check:
+        passed = passed and any(bend.get("direction") == check["direction"] for bend in bends)
+
+    expected = {key: check[key] for key in ("count", "angle", "inside_radius", "direction") if key in check}
+    return {
+        "id": check["id"],
+        "type": "bend",
+        "status": "pass" if passed else "fail",
+        "observed": {"count": len(bends), "bends": bends},
+        "expected": expected,
+    }
+
+
 def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Path) -> dict[str, Any]:
     """Route a requirement entry to its evaluator."""
 
@@ -672,6 +716,8 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Pat
         return _check_center_of_mass(spatial, check)
     if check_type == "stability":
         return _check_stability(spatial, check)
+    if check_type == "bend":
+        return _check_bend(run_dir, check)
     raise ValueError(f"unsupported check type {check_type!r}")
 
 

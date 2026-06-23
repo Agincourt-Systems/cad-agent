@@ -145,3 +145,12 @@
   by volume (no unit-inconsistent hybrid), degenerate-support and kernel-free
   paths tested, `center_of_mass` target defaults to `assembly`. Merged ADR 0015
   to `master` with `60 passed`.
+- Started ADR 0016 on `claude/adr-0016-sheet-metal-bend`.
+- Confirmed ADR 0016 red state: no `cadx.sheetmetal` module and no `bend` check.
+- Implemented `sheetmetal.bend()` (developed length via K-factor, two-box folded
+  envelope, flat profile, bend lines), `publish_sheet_metal`, a sheet-metal DXF
+  export reusing ADR 0013's `_write_dxf` with a `bend` layer, an aggregated
+  `bends.json` bend table, and a `bend` evaluate check. Review found and fixed a
+  multi-part `bends.json` clobber (now one aggregated table, label-tagged rows)
+  and a `direction="down"` envelope discrepancy; added input validation. Merged
+  ADR 0016 to `master` with `69 passed`.

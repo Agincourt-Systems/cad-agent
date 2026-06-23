@@ -66,6 +66,35 @@ def publish_flat(label: str, profile: Any, *, layer: str = "cut", thickness_mm: 
     )
 
 
+def publish_sheet_metal(label: str, part: Any, *, layer: str = "cut", role: str = "part", **metadata: Any) -> None:
+    """Publish a folded sheet-metal part: 3D solid + flat pattern + bend table.
+
+    ``part`` is a :class:`cadx.sheetmetal.SheetMetalPart`. Its folded solid is
+    stored as the published object so the existing STEP/STL/GLB exports and
+    spatial checks see the assembled pose, while its flat pattern, bend lines, and
+    bend table travel under an internal ``flat`` key that the runner consumes to
+    emit the combined cut+bend DXF and the ``bends.json`` bend table. The internal
+    ``flat`` key also makes auto-flatten (ADR 0013) skip this entry, so the bend
+    DXF is never overwritten by a naive flatten of the folded solid.
+    """
+
+    _PUBLISHED.append(
+        {
+            "label": label,
+            "role": role,
+            "object": part.folded,
+            "placement": None,
+            "metadata": metadata,
+            "flat": {
+                "profile": part.flat_profile,
+                "layer": layer,
+                "bend_lines": part.bend_lines,
+                "bends": part.bends,
+            },
+        }
+    )
+
+
 def publish_feature(feature_id: str, kind: str, **properties: Any) -> None:
     """Publish a critical feature such as a hole, slot, boss, rib, or datum."""
 
@@ -80,8 +109,9 @@ def snapshot_registry() -> dict[str, Any]:
     # Published CAD objects may wrap Open Cascade handles that are expensive or
     # impossible to deepcopy. Preserve the object references for export and
     # normalization while copying the JSON-like metadata around them.
-    published = [
-        {
+    published = []
+    for entry in _PUBLISHED:
+        snapshot_entry = {
             "label": entry["label"],
             "role": entry["role"],
             "object": entry["object"],
@@ -90,8 +120,11 @@ def snapshot_registry() -> dict[str, Any]:
             "placement": entry.get("placement"),
             "metadata": deepcopy(entry["metadata"]),
         }
-        for entry in _PUBLISHED
-    ]
+        # Sheet-metal publications attach a flat pattern + bend table whose
+        # build123d shapes must also be carried by reference, not deepcopied.
+        if entry.get("flat") is not None:
+            snapshot_entry["flat"] = entry["flat"]
+        published.append(snapshot_entry)
     # Flat profiles keep their build123d object by reference (Open Cascade
     # handles are not deepcopy-safe) while their JSON-like metadata is copied.
     flats = [

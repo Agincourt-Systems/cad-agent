@@ -12,6 +12,7 @@ from cadx.registry import (
     publish,
     publish_feature,
     publish_flat,
+    publish_sheet_metal,
     snapshot_registry,
 )
 
@@ -20,5 +21,6 @@ __all__ = [
     "publish",
     "publish_feature",
     "publish_flat",
+    "publish_sheet_metal",
     "snapshot_registry",
 ]
