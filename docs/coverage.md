@@ -52,6 +52,11 @@ CLI is the agent-facing interface. Those tests exercise:
   (parsed with `ezdxf` for per-layer entity counts and the bend-line location),
   the single aggregated `bends.json` across multiple bent parts, and the `bend`
   evaluate check (pass, fail, missing-table).
+- BOM / manufacturing package (ADR 0017): `publish_part_meta` recorded into
+  diagnostics; `cadx bom` deriving area (recorded flat-pattern area, including the
+  bent-part unfolded area rather than the folded flange), hole count, and bbox;
+  vendor grouping and totals; byte-identical CSV determinism; the no-metadata /
+  no-STEP degrade path; an explicit `qty=0`; and the orphan-metadata warning.
 
 Known gaps:
 

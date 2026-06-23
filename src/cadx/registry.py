@@ -15,6 +15,7 @@ from typing import Any
 _PUBLISHED: list[dict[str, Any]] = []
 _FEATURES: list[dict[str, Any]] = []
 _FLATS: list[dict[str, Any]] = []
+_PART_META: list[dict[str, Any]] = []
 
 
 def clear_registry() -> None:
@@ -23,6 +24,7 @@ def clear_registry() -> None:
     _PUBLISHED.clear()
     _FEATURES.clear()
     _FLATS.clear()
+    _PART_META.clear()
 
 
 def publish(label: str, obj: Any, role: str = "part", placement: Any = None, **metadata: Any) -> None:
@@ -103,6 +105,44 @@ def publish_feature(feature_id: str, kind: str, **properties: Any) -> None:
     _FEATURES.append(feature)
 
 
+def publish_part_meta(
+    label: str,
+    *,
+    vendor: str | None = None,
+    material: str | None = None,
+    thickness_mm: float | None = None,
+    finish: str | None = None,
+    qty: int = 1,
+    source_url: str | None = None,
+    unit_cost: float | None = None,
+    part_number: str | None = None,
+    process: str | None = None,
+) -> None:
+    """Declare purchasing/manufacturing metadata for a published part.
+
+    The harness joins this with auto-derived geometry facts (flat-pattern area,
+    bounding box, hole count) into a bill of materials via ``cadx bom``. All ten
+    fields are stored explicitly — defaulting to ``None`` (or ``qty=1``) — so the
+    diagnostics record shape is fixed regardless of which keywords the author
+    supplied, which keeps the downstream BOM aggregation simple and total.
+    """
+
+    _PART_META.append(
+        {
+            "label": label,
+            "vendor": vendor,
+            "material": material,
+            "thickness_mm": thickness_mm,
+            "finish": finish,
+            "qty": qty,
+            "source_url": source_url,
+            "unit_cost": unit_cost,
+            "part_number": part_number,
+            "process": process,
+        }
+    )
+
+
 def snapshot_registry() -> dict[str, Any]:
     """Return a defensive copy of all publications captured this run."""
 
@@ -137,4 +177,9 @@ def snapshot_registry() -> dict[str, Any]:
         }
         for entry in _FLATS
     ]
-    return {"published": published, "features": deepcopy(_FEATURES), "flats": flats}
+    return {
+        "published": published,
+        "features": deepcopy(_FEATURES),
+        "flats": flats,
+        "part_meta": deepcopy(_PART_META),
+    }

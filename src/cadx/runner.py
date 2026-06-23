@@ -397,10 +397,26 @@ def _auto_flat_profile(obj: Any) -> tuple[Any, float | None, str | None]:
     return profile, float(thickness), None
 
 
-def _flat_export_record(label: str, target: Path, layer: str, thickness_mm: float | None) -> dict[str, Any]:
-    """Build the diagnostics export record for a written DXF."""
+def _profile_area(profile: Any) -> float | None:
+    """Planar area of a flat profile (outer outline minus interior cutouts)."""
 
-    return {
+    try:
+        return float(profile.area)
+    except Exception:
+        return None
+
+
+def _flat_export_record(
+    label: str, target: Path, layer: str, thickness_mm: float | None, area_mm2: float | None = None
+) -> dict[str, Any]:
+    """Build the diagnostics export record for a written DXF.
+
+    ``area_mm2`` is the true flat-pattern area (after any unfold), which the BOM
+    (ADR 0017) quotes on — recorded here because the exporter holds the flat
+    profile, where for a sheet-metal part the folded solid's faces do not.
+    """
+
+    record: dict[str, Any] = {
         "label": label,
         "format": "dxf",
         "path": str(target),
@@ -408,6 +424,9 @@ def _flat_export_record(label: str, target: Path, layer: str, thickness_mm: floa
         "thickness_mm": thickness_mm,
         "units": "mm",
     }
+    if area_mm2 is not None:
+        record["area_mm2"] = area_mm2
+    return record
 
 
 def _export_flats(flats: list[dict[str, Any]], run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -434,7 +453,9 @@ def _export_flats(flats: list[dict[str, Any]], run_dir: Path) -> tuple[list[dict
             profile = _flatten_to_xy(flat["profile"])
             target = run_dir / f"{label}.dxf"
             _write_dxf(profile, flat["layer"], target)
-            exports.append(_flat_export_record(label, target, flat["layer"], flat.get("thickness_mm")))
+            exports.append(
+                _flat_export_record(label, target, flat["layer"], flat.get("thickness_mm"), _profile_area(profile))
+            )
         except Exception as exc:
             warnings.append({"type": "flat_export_failed", "label": label, "message": str(exc)})
     return exports, warnings
@@ -481,7 +502,7 @@ def _auto_export_flats(
             flat_profile = _flatten_to_xy(profile)
             target = run_dir / f"{label}.dxf"
             _write_dxf(flat_profile, "cut", target)
-            exports.append(_flat_export_record(label, target, "cut", thickness))
+            exports.append(_flat_export_record(label, target, "cut", thickness, _profile_area(flat_profile)))
         except Exception as exc:
             warnings.append({"type": "flat_export_failed", "label": label, "message": str(exc)})
     return exports, warnings
@@ -513,7 +534,8 @@ def _export_sheet_metal(entry: dict[str, Any], run_dir: Path) -> tuple[list[dict
         target = run_dir / f"{label}.dxf"
         extra_layers = [("bend", bend_lines)] if bend_lines else None
         _write_dxf(flat["profile"], flat["layer"], target, extra_layers=extra_layers)
-        record = _flat_export_record(label, target, flat["layer"], None)
+        # The flat profile (not the folded solid) carries the true developed area.
+        record = _flat_export_record(label, target, flat["layer"], None, _profile_area(flat["profile"]))
         if bend_lines:
             record["layers"] = [flat["layer"], "bend"]
         return [record], []
@@ -615,6 +637,7 @@ def _base_diagnostics(source_path: Path, params: dict[str, Any]) -> dict[str, An
         "params": params,
         "published": [],
         "features": [],
+        "part_meta": [],
         "warnings": [],
         "exports": [],
     }

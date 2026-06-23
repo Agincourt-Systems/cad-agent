@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from cadx.bom import build_bom
 from cadx.compare import compare_runs
 from cadx.evaluate import evaluate_run
 from cadx.files import init_project
@@ -55,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("left_run_dir", type=Path)
     compare_parser.add_argument("right_run_dir", type=Path)
 
+    bom_parser = subcommands.add_parser("bom", help="Aggregate part metadata into bom.csv/bom.json")
+    bom_parser.add_argument("run_dir", type=Path)
+
     loop_parser = subcommands.add_parser("loop", help="Run/render/evaluate until pass or iteration limit")
     loop_parser.add_argument("source", type=Path)
     loop_parser.add_argument("--params", type=Path, default=Path("params.yaml"))
@@ -92,6 +96,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "compare":
         _print(compare_runs(args.left_run_dir, args.right_run_dir))
+        return 0
+    if args.command == "bom":
+        _print(build_bom(args.run_dir))
         return 0
     if args.command == "loop":
         payload = loop_until_done(

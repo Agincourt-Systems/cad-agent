@@ -44,6 +44,7 @@ def _write_error_diagnostics(
             "params": params,
             "published": [],
             "features": [],
+            "part_meta": [],
             "errors": [
                 {
                     "type": exc.__class__.__name__,
@@ -106,6 +107,7 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
             "params": params,
             "published": published,
             "features": raw_registry["features"],
+            "part_meta": raw_registry.get("part_meta", []),
             "errors": [],
             "warnings": warnings,
             "exports": exports,

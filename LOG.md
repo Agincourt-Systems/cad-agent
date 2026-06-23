@@ -154,3 +154,12 @@
   multi-part `bends.json` clobber (now one aggregated table, label-tagged rows)
   and a `direction="down"` envelope discrepancy; added input validation. Merged
   ADR 0016 to `master` with `69 passed`.
+- Started ADR 0017 on `claude/adr-0017-bom`.
+- Confirmed ADR 0017 red state: no `publish_part_meta` and no `bom` subcommand.
+- Implemented `publish_part_meta` (recorded into `diagnostics["part_meta"]` in
+  all three envelopes), a `cadx bom` subcommand, and `src/cadx/bom.py` writing
+  deterministic `bom.csv`/`bom.json` grouped by vendor with totals. Review-driven
+  fixes: keep an explicit `qty=0`, record the true flat-pattern `area_mm2` on DXF
+  exports so a bent part quotes on its unfolded area (not the folded flange), warn
+  on orphan part metadata, and stabilize totals to float. Merged ADR 0017 to
+  `master` with `76 passed`.
