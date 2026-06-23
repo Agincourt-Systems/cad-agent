@@ -192,3 +192,13 @@
   ADR 0020 to `master` with `96 passed`.
 - All nine sheet-metal deficiencies (D1-D9) are now implemented across ADRs
   0013-0020.
+- Ran a holistic acceptance review (acceptance vs spec, machine-contract
+  stability, AGENTS.md compliance, end-to-end SendCutSend smoke). Verdict:
+  go-with-fixes, zero blockers. Two should-fix items from the end-to-end view
+  became ADR 0021 on `claude/adr-0021-assembly-robustness`:
+  (1) `_assembly_center_of_mass` only aggregated `role="part"`, silently dropping
+  the idiomatic `role="final"` base part from the assembly CoM (skewing
+  stability/CoG checks) — now aggregates all physical roles, excluding only a
+  fixture/reference denylist; (2) a mistyped `dimension`/`topology` target raised
+  an uncaught `KeyError` aborting the whole evaluate — now degrades to a graceful
+  failed check. Red state confirmed, fixed, merged with `98 passed`.

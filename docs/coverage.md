@@ -72,6 +72,9 @@ CLI is the agent-facing interface. Those tests exercise:
   re-running a design across parameter sets with all-pass and out-of-range-fail
   aggregation, the failed-set `run_status` branch, the `cadx sweep` subcommand,
   the unchanged unknown-type `ValueError`, and the README check-type contract.
+- Assembly robustness (ADR 0021): the assembly center of mass aggregates physical
+  `part`/`final` roles and excludes fixtures, and a mistyped `dimension`/`topology`
+  target degrades to a graceful failed check instead of crashing the evaluation.
 
 Known gaps:
 

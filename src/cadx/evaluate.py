@@ -84,10 +84,32 @@ def _resolve_dimension(spatial: dict[str, Any], target: str) -> Any:
     return current
 
 
+def _resolve_dimension_or_error(spatial: dict[str, Any], check: dict[str, Any]) -> tuple[Any, dict[str, Any] | None]:
+    """Resolve a target value, or return a graceful failed-check record.
+
+    A mistyped target (e.g. ``obj.plate.solids`` missing the ``.topology``
+    segment) is a common authoring error; it fails the one check with a
+    descriptive error rather than raising and aborting the whole evaluation,
+    matching how the assembly checks degrade on bad selectors.
+    """
+
+    try:
+        return _resolve_dimension(spatial, check["target"]), None
+    except (KeyError, ValueError, IndexError, TypeError) as exc:
+        return None, {
+            "id": check["id"],
+            "type": check["type"],
+            "status": "fail",
+            "error": f"could not resolve target {check['target']!r}: {exc}",
+        }
+
+
 def _check_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
     """Evaluate a scalar dimension exact or range check."""
 
-    observed = _resolve_dimension(spatial, check["target"])
+    observed, error = _resolve_dimension_or_error(spatial, check)
+    if error is not None:
+        return error
     expected = _numeric_expectation(check)
     tolerance = check.get("tolerance", 0)
     passed = _numeric_status(float(observed), check)
@@ -104,7 +126,9 @@ def _check_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str
 def _check_topology(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
     """Evaluate topology counts through the same target-path grammar."""
 
-    observed = _resolve_dimension(spatial, check["target"])
+    observed, error = _resolve_dimension_or_error(spatial, check)
+    if error is not None:
+        return error
     expected = _numeric_expectation(check)
     tolerance = check.get("tolerance", 0)
     passed = _numeric_status(float(observed), check)

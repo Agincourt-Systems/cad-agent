@@ -30,6 +30,11 @@ _DEDUP_SIZE_PROPERTIES = ("diameter", "width", "length")
 # line instead of point-to-point distance.
 _AXIAL_KINDS = {"cylindrical_hole", "cylindrical_boss"}
 
+# Roles that are reference/keep-out geometry rather than physical parts, so they
+# do not contribute to the assembly's aggregate mass. Every other role
+# (including the idiomatic "part" and "final") is a physical part.
+_NON_PHYSICAL_ROLES = {"fixture", "reference", "datum", "keepout"}
+
 
 def _with_bbox_size(obj: dict[str, Any]) -> dict[str, Any]:
     """Ensure every object bbox includes a ``size`` vector."""
@@ -368,7 +373,11 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
     # positive density.
     qualifying: list[tuple[float, list[float], float | None]] = []
     for obj in objects:
-        if obj.get("role", "part") != "part":
+        # Aggregate every physical part. The primary part is idiomatically
+        # published as role="final" (the starter design and most assemblies do),
+        # so excluding all non-"part" roles would silently drop the heaviest part
+        # from the assembly center of mass and skew a stability/load-cell check.
+        if obj.get("role", "part") in _NON_PHYSICAL_ROLES:
             continue
         mass_properties = obj.get("mass_properties", {})
         volume = mass_properties.get("volume")
