@@ -163,3 +163,13 @@
   exports so a bent part quotes on its unfolded area (not the folded flange), warn
   on orphan part metadata, and stabilize totals to float. Merged ADR 0017 to
   `master` with `76 passed`.
+- Started ADR 0018 on `claude/adr-0018-dfm`.
+- Confirmed ADR 0018 red state: `manufacturability` raised `unsupported check
+  type`.
+- Implemented a pure-python `src/cadx/dfm.py` engine (min_hole_diameter,
+  min_slot_width, hole_to_edge, min_web, min_bend_radius, hole_to_bend) routed
+  from `evaluate.py`. Review found two rule-math blockers, both fixed: hole_to_edge
+  derived the thickness axis from the feature axis (wrong for detected slots,
+  whose axis is the elongation direction) — now from the owning bbox with per-axis
+  slot half-extents; and min_web paired two unsourced features (`None == None`).
+  Merged ADR 0018 to `master` with `87 passed`.

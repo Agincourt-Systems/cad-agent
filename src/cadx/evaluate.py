@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from cadx.dfm import evaluate_manufacturability
 from cadx.files import read_json, write_json
 
 
@@ -718,6 +719,8 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Pat
         return _check_stability(spatial, check)
     if check_type == "bend":
         return _check_bend(run_dir, check)
+    if check_type == "manufacturability":
+        return evaluate_manufacturability(spatial, check)
     raise ValueError(f"unsupported check type {check_type!r}")
 
 

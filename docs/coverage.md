@@ -57,6 +57,12 @@ CLI is the agent-facing interface. Those tests exercise:
   bent-part unfolded area rather than the folded flange), hole count, and bbox;
   vendor grouping and totals; byte-identical CSV determinism; the no-metadata /
   no-STEP degrade path; an explicit `qty=0`; and the orphan-metadata warning.
+- Manufacturability / DFM (ADR 0018): the `manufacturability` check's six rules
+  (min_hole_diameter, min_slot_width, hole_to_edge, min_web, min_bend_radius,
+  hole_to_bend) with pass and fail branches, offending-feature naming, warn
+  severity not failing, explicit-thickness/factor limit resolution, the
+  bbox-derived thickness axis for in-plane slot edge clearance, the unsourced
+  min_web guard, and the unknown-rule skip.
 
 Known gaps:
 
