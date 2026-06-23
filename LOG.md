@@ -173,3 +173,10 @@
   whose axis is the elongation direction) — now from the owning bbox with per-axis
   slot half-extents; and min_web paired two unsourced features (`None == None`).
   Merged ADR 0018 to `master` with `87 passed`.
+- Started ADR 0019 on `claude/adr-0019-contact-sheet`.
+- Confirmed ADR 0019 red state: the contact-sheet ISO panel was a placeholder
+  rectangle (~0.06 non-white) and the manifest had no `contact_panels` key.
+- Implemented embedding the real `views/shaded_iso.png` raster into the ISO panel
+  (no headless SVG rasterizer, so ortho/section panels keep placeholders) and a
+  `contact_panels` manifest record per panel. Merged ADR 0019 to `master` with
+  `90 passed`.

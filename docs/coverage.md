@@ -63,6 +63,11 @@ CLI is the agent-facing interface. Those tests exercise:
   severity not failing, explicit-thickness/factor limit resolution, the
   bbox-derived thickness axis for in-plane slot edge clearance, the unsourced
   min_web guard, and the unknown-rule skip.
+- Real-geometry contact sheet (ADR 0019): the ISO panel embeds the real shaded
+  raster (asserted by pixel signature — non-white fraction, color diversity, and
+  blue-dominant hue), the manifest records the embedded panel source, and a
+  synthetic dict design with no STL falls back to the placeholder with a
+  `source is None` record.
 
 Known gaps:
 

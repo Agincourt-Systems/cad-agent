@@ -29,8 +29,64 @@ SECTION_VIEWPORTS = {
 }
 
 
-def _draw_with_pillow(path: Path, spatial: dict[str, Any]) -> None:
-    """Render a simple but informative contact sheet with Pillow."""
+def _placeholder_rectangle(draw: Any, box: tuple[int, int, int, int], objects: list[dict[str, Any]]) -> None:
+    """Draw the deterministic bbox-scaled placeholder rectangle for a panel.
+
+    Used only for panels with no real raster to embed (synthetic designs, or
+    views the headless renderer cannot rasterize), so an agent still gets a
+    visual anchor.
+    """
+
+    if not objects:
+        return
+    bbox = objects[0]["bbox"]
+    size = bbox.get("size", [1, 1, 1])
+    max_size = max(size) or 1
+    panel_w = box[2] - box[0] - 70
+    panel_h = box[3] - box[1] - 70
+    rect_w = max(20, int(panel_w * (size[0] / max_size)))
+    rect_h = max(20, int(panel_h * (size[1] / max_size)))
+    cx = (box[0] + box[2]) // 2
+    cy = (box[1] + box[3]) // 2
+    draw.rectangle(
+        (cx - rect_w // 2, cy - rect_h // 2, cx + rect_w // 2, cy + rect_h // 2),
+        outline=(22, 94, 150),
+        width=3,
+    )
+
+
+def _load_shaded_raster(rasters: list[dict[str, Any]] | None) -> tuple[Any, str | None]:
+    """Open the shaded isometric raster (if rendered) for contact-sheet embedding."""
+
+    from PIL import Image
+
+    shaded = next((raster for raster in (rasters or []) if raster.get("name") == "shaded_iso"), None)
+    if not shaded:
+        return None, None
+    shaded_path = Path(shaded["path"])
+    if not shaded_path.exists():
+        return None, None
+    try:
+        return Image.open(shaded_path).convert("RGB"), str(shaded["path"])
+    except Exception:
+        return None, None
+
+
+# Panels that embed the real shaded raster when one is available.
+_SHADED_PANELS = {"ISO SHADED"}
+
+
+def _draw_with_pillow(
+    path: Path, spatial: dict[str, Any], rasters: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Render the contact sheet, embedding the real shaded raster where possible.
+
+    Returns one ``contact_panels`` record per panel describing whether the real
+    geometry raster was embedded (``source == "shaded_iso"``) or the placeholder
+    fallback was used (``source is None``). The shaded isometric raster is the
+    only real view that can be embedded headless — there is no SVG rasterizer
+    available — so the orthographic/section panels keep the placeholder anchor.
+    """
 
     from PIL import Image, ImageDraw, ImageFont
 
@@ -38,8 +94,7 @@ def _draw_with_pillow(path: Path, spatial: dict[str, Any]) -> None:
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
-    title = "CAD Agent Contact Sheet"
-    draw.text((24, 20), title, fill=(20, 20, 20), font=font)
+    draw.text((24, 20), "CAD Agent Contact Sheet", fill=(20, 20, 20), font=font)
 
     objects = spatial.get("objects", [])
     features = spatial.get("features", [])
@@ -52,27 +107,30 @@ def _draw_with_pillow(path: Path, spatial: dict[str, Any]) -> None:
         ("CHECK OVERLAY", (680, 300, 976, 500)),
     ]
 
+    shaded_image, shaded_source = _load_shaded_raster(rasters)
+    contact_panels: list[dict[str, Any]] = []
     for label, box in panels:
+        embedded = False
+        if shaded_image is not None and label in _SHADED_PANELS:
+            # Fit the real raster into the panel interior (below the label band).
+            interior = (box[0] + 6, box[1] + 24, box[2] - 6, box[3] - 6)
+            interior_w = interior[2] - interior[0]
+            interior_h = interior[3] - interior[1]
+            thumb = shaded_image.copy()
+            thumb.thumbnail((interior_w, interior_h))
+            offset_x = interior[0] + (interior_w - thumb.width) // 2
+            offset_y = interior[1] + (interior_h - thumb.height) // 2
+            image.paste(thumb, (offset_x, offset_y))
+            embedded = True
+
+        # Draw the frame and label on top of any embedded raster.
         draw.rectangle(box, outline=(40, 40, 40), width=2)
         draw.text((box[0] + 10, box[1] + 10), label, fill=(40, 40, 40), font=font)
-        # The placeholder geometry rectangle is scaled from the first object
-        # bbox. It is deterministic and gives agents a visual anchor even
-        # before true shaded CAD rendering is installed.
-        if objects:
-            bbox = objects[0]["bbox"]
-            size = bbox.get("size", [1, 1, 1])
-            max_size = max(size) or 1
-            panel_w = box[2] - box[0] - 70
-            panel_h = box[3] - box[1] - 70
-            rect_w = max(20, int(panel_w * (size[0] / max_size)))
-            rect_h = max(20, int(panel_h * (size[1] / max_size)))
-            cx = (box[0] + box[2]) // 2
-            cy = (box[1] + box[3]) // 2
-            draw.rectangle(
-                (cx - rect_w // 2, cy - rect_h // 2, cx + rect_w // 2, cy + rect_h // 2),
-                outline=(22, 94, 150),
-                width=3,
-            )
+        if embedded:
+            contact_panels.append({"label": label, "source": "shaded_iso", "path": shaded_source})
+        else:
+            _placeholder_rectangle(draw, box, objects)
+            contact_panels.append({"label": label, "source": None, "path": None})
 
     summary = f"units={spatial.get('units', 'mm')} | objects={len(objects)} | features={len(features)}"
     if objects:
@@ -88,6 +146,7 @@ def _draw_with_pillow(path: Path, spatial: dict[str, Any]) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
+    return contact_panels
 
 
 def _resolve_export_path(run_dir: Path, export_path: str) -> Path:
@@ -354,7 +413,7 @@ def render_run(run_dir: Path) -> dict[str, Any]:
     views, sections = _render_step_artifacts(run_dir)
     rasters = _render_raster_artifacts(run_dir)
     contact_sheet = run_dir / "views" / "contact.png"
-    _draw_with_pillow(contact_sheet, spatial)
+    contact_panels = _draw_with_pillow(contact_sheet, spatial, rasters=rasters)
     manifest = {
         "schema_version": "1.0",
         "status": "ok",
@@ -362,6 +421,7 @@ def render_run(run_dir: Path) -> dict[str, Any]:
         "views": views,
         "sections": sections,
         "rasters": rasters,
+        "contact_panels": contact_panels,
     }
     manifest_path = run_dir / "views" / "render_manifest.json"
     write_json(manifest_path, manifest)
