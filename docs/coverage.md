@@ -68,6 +68,10 @@ CLI is the agent-facing interface. Those tests exercise:
   blue-dominant hue), the manifest records the embedded panel source, and a
   synthetic dict design with no STL falls back to the placeholder with a
   `source is None` record.
+- Parametric sweeps and documented check types (ADR 0020): the `parametric` check
+  re-running a design across parameter sets with all-pass and out-of-range-fail
+  aggregation, the failed-set `run_status` branch, the `cadx sweep` subcommand,
+  the unchanged unknown-type `ValueError`, and the README check-type contract.
 
 Known gaps:
 
@@ -83,9 +87,25 @@ Known gaps:
   invocation.
 - Slot detection is limited to paired partial cylindrical end faces.
 - Shaded raster rendering is a simple software renderer, not photorealistic.
+- The sheet-metal folded solid (ADR 0016) uses a rectilinear envelope that omits
+  the rounded inside-radius corner; the developed flat length carries the
+  bend-allowance correction that matters for fabrication.
+- The DFM `min_bend_radius`/`hole_to_bend` rules (ADR 0018) act on explicitly
+  published `kind="bend"` features; the standard sheet-metal flow records bends in
+  `bends.json` (consumed by the `bend` check), so these DFM rules are inert until
+  such a feature is published.
+- The contact sheet (ADR 0019) embeds the real shaded raster in the ISO panel
+  only; the orthographic/section panels stay placeholders because no SVG
+  rasterizer is available headless (the real SVG projections exist as standalone
+  artifacts). A dimensioned per-part drawing is future work.
+- The `symmetry` and `visual` requirement check types remain unimplemented (ADR
+  0020); they are documented as such and raise a clear `ValueError`.
 
-The remaining gaps are acceptable at the end of ADR 0011 because the harness
-has a tested full command loop with exact CAD exports, structured spatial
-facts, projection and section SVGs, shaded raster output, evaluation reports,
-loop orchestration, and run-to-run comparison. Hardened sandboxing and
-agent-driven source patching can be added as later improvements.
+The remaining gaps are acceptable at the end of ADR 0020 — which closes the
+sheet-metal/SendCutSend deficiencies D1-D9 (DXF flat export, assembly placement
+and alignment/interference, center of mass and stability, sheet-metal bends, BOM,
+DFM, real contact sheet, and parametric sweeps) on top of the ADR 0001-0012
+harness — because each is a documented approximation or a feature scoped to a
+later need (`symmetry`/`visual`, hardened sandboxing, agent-driven source
+patching, a non-convex stability footprint), not a correctness gap in what is
+implemented.

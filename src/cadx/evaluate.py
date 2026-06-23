@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from cadx.dfm import evaluate_manufacturability
-from cadx.files import read_json, write_json
+from cadx.files import read_json, write_json, write_yaml
 
 
 AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
@@ -693,7 +693,64 @@ def _check_bend(run_dir: Path, check: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+def _run_param_set(run_dir: Path, params: dict[str, Any], sweep_root: Path, timeout: float) -> tuple[Path, str]:
+    """Re-run the design's source snapshot with one parameter set.
+
+    The swept design is the run's own ``source_snapshot.py``, so the geometry the
+    sweep evaluates matches the geometry the original run produced. Returns the
+    parameter set's run directory and its run status.
+    """
+
+    from cadx.runner import run_design
+
+    params_path = sweep_root / "params.yaml"
+    write_yaml(params_path, params)
+    payload = run_design(run_dir / "source_snapshot.py", params_path, sweep_root, timeout)
+    return Path(payload["artifact_dir"]), payload["status"]
+
+
+def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Run the design across parameter sets and aggregate ordinary sub-checks.
+
+    Useful for tolerance/stack-up studies: each parameter set re-runs the design
+    into ``<run_dir>/sweeps/<check id>/NNNN`` and the listed sub-checks are
+    evaluated against that set's ``spatial.json``. The aggregate passes only when
+    every set passes. The sweep directory is cleared each evaluation so re-running
+    is idempotent.
+    """
+
+    import shutil
+
+    sweep_root = run_dir / "sweeps" / check["id"]
+    if sweep_root.exists():
+        shutil.rmtree(sweep_root)
+    sweep_root.mkdir(parents=True, exist_ok=True)
+
+    sets: list[dict[str, Any]] = []
+    for params in check["params"]:
+        set_run_dir, status = _run_param_set(run_dir, params, sweep_root, timeout)
+        if status != "ok":
+            sets.append({"params": params, "status": "fail", "run_status": status, "checks": []})
+            continue
+        spatial = read_json(set_run_dir / "spatial.json")
+        sub_checks = [_evaluate_check(spatial, sub, set_run_dir, timeout) for sub in check.get("checks", [])]
+        set_passed = all(result["status"] == "pass" for result in sub_checks)
+        sets.append({"params": params, "status": "pass" if set_passed else "fail", "checks": sub_checks})
+
+    passed = sum(1 for entry in sets if entry["status"] == "pass")
+    return {
+        "id": check["id"],
+        "type": "parametric",
+        "status": "pass" if sets and passed == len(sets) else "fail",
+        "passed": passed,
+        "total": len(sets),
+        "sets": sets,
+    }
+
+
+def _evaluate_check(
+    spatial: dict[str, Any], check: dict[str, Any], run_dir: Path, timeout: float = 30.0
+) -> dict[str, Any]:
     """Route a requirement entry to its evaluator."""
 
     check_type = check["type"]
@@ -721,6 +778,8 @@ def _evaluate_check(spatial: dict[str, Any], check: dict[str, Any], run_dir: Pat
         return _check_bend(run_dir, check)
     if check_type == "manufacturability":
         return evaluate_manufacturability(spatial, check)
+    if check_type == "parametric":
+        return _check_parametric(run_dir, check, timeout)
     raise ValueError(f"unsupported check type {check_type!r}")
 
 
@@ -793,12 +852,27 @@ def _write_report(run_dir: Path, payload: dict[str, Any]) -> Path:
     return report_path
 
 
-def evaluate_run(run_dir: Path, requirements_path: Path) -> dict[str, Any]:
+def sweep_run(run_dir: Path, requirements_path: Path, timeout: float = 30.0) -> dict[str, Any]:
+    """Evaluate only the ``parametric`` checks in a requirements file.
+
+    A focused, read-mostly view that runs each parametric sweep and reports the
+    aggregate verdicts without rewriting ``checks.json`` (which ``evaluate``
+    owns).
+    """
+
+    requirements = yaml.safe_load(requirements_path.read_text(encoding="utf-8")) or {}
+    parametric = [check for check in requirements.get("checks", []) if check.get("type") == "parametric"]
+    sweeps = [_check_parametric(run_dir, check, timeout) for check in parametric]
+    failed = [sweep["id"] for sweep in sweeps if sweep["status"] != "pass"]
+    return {"status": "pass" if not failed else "fail", "sweeps": sweeps, "failed": failed}
+
+
+def evaluate_run(run_dir: Path, requirements_path: Path, timeout: float = 30.0) -> dict[str, Any]:
     """Evaluate ``requirements.yaml`` against a run's spatial facts."""
 
     spatial = read_json(run_dir / "spatial.json")
     requirements = yaml.safe_load(requirements_path.read_text(encoding="utf-8")) or {}
-    results = [_evaluate_check(spatial, check, run_dir) for check in requirements.get("checks", [])]
+    results = [_evaluate_check(spatial, check, run_dir, timeout) for check in requirements.get("checks", [])]
     failed = [result["id"] for result in results if result["status"] != "pass"]
 
     payload = {

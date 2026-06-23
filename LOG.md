@@ -180,3 +180,15 @@
   (no headless SVG rasterizer, so ortho/section panels keep placeholders) and a
   `contact_panels` manifest record per panel. Merged ADR 0019 to `master` with
   `90 passed`.
+- Started ADR 0020 on `claude/adr-0020-parametric`.
+- Confirmed ADR 0020 red state: `parametric` raised `unsupported check type` and
+  `cadx sweep` was unrecognized.
+- Implemented a `parametric` check that re-runs the design's `source_snapshot.py`
+  across parameter sets into `sweeps/<id>/NNNN` and aggregates sub-checks, an
+  additive `timeout` keyword threaded through `_evaluate_check`/`evaluate_run`, a
+  `cadx sweep` subcommand, and a README "Requirement check types" section naming
+  `symmetry`/`visual` as unsupported. Review confirmed signature back-compat,
+  determinism, report rendering, and timeout end-to-end with no blockers. Merged
+  ADR 0020 to `master` with `96 passed`.
+- All nine sheet-metal deficiencies (D1-D9) are now implemented across ADRs
+  0013-0020.

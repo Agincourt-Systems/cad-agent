@@ -14,7 +14,7 @@ from typing import Any
 
 from cadx.bom import build_bom
 from cadx.compare import compare_runs
-from cadx.evaluate import evaluate_run
+from cadx.evaluate import evaluate_run, sweep_run
 from cadx.files import init_project
 from cadx.inspector import inspect_run
 from cadx.loop import loop_until_done
@@ -51,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser = subcommands.add_parser("evaluate", help="Evaluate a run against requirements")
     evaluate_parser.add_argument("run_dir", type=Path)
     evaluate_parser.add_argument("--requirements", type=Path, default=Path("requirements.yaml"))
+    evaluate_parser.add_argument("--timeout-seconds", type=float, default=30)
+
+    sweep_parser = subcommands.add_parser("sweep", help="Run parametric requirement sweeps")
+    sweep_parser.add_argument("run_dir", type=Path)
+    sweep_parser.add_argument("--requirements", type=Path, default=Path("requirements.yaml"))
+    sweep_parser.add_argument("--timeout-seconds", type=float, default=30)
 
     compare_parser = subcommands.add_parser("compare", help="Compare two inspected run directories")
     compare_parser.add_argument("left_run_dir", type=Path)
@@ -91,9 +97,13 @@ def main(argv: list[str] | None = None) -> int:
         _print(render_run(args.run_dir))
         return 0
     if args.command == "evaluate":
-        payload = evaluate_run(args.run_dir, args.requirements)
+        payload = evaluate_run(args.run_dir, args.requirements, args.timeout_seconds)
         _print(payload)
         return 0
+    if args.command == "sweep":
+        payload = sweep_run(args.run_dir, args.requirements, args.timeout_seconds)
+        _print(payload)
+        return 0 if payload["status"] == "pass" else 1
     if args.command == "compare":
         _print(compare_runs(args.left_run_dir, args.right_run_dir))
         return 0
