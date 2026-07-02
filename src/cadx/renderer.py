@@ -324,22 +324,44 @@ def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, 
     exporter.write(target)
 
 
-def _render_step_artifacts(run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _render_step_artifacts(
+    run_dir: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Generate deterministic SVG views and sections from the first STEP export.
 
     The first implementation renders one primary object because the MVP
     publishes a single final part. The manifest keeps object labels so a future
     multi-part renderer can extend this without changing the agent contract.
+
+    Returns ``(views, sections, warnings)``. An unreadable STEP export skips
+    the projected views with a ``render_step_failed`` warning instead of
+    aborting the render — the contact sheet from ``spatial.json`` still gets
+    produced. ``import_step`` on garbage can either raise or quietly return an
+    empty shape depending on the OCCT version (projecting the empty shape then
+    fails much later), so an import with no faces is treated as the same
+    failure up front.
     """
 
     exports = _step_exports(run_dir)
     if not exports:
-        return [], []
+        return [], [], []
 
     from build123d import Plane, import_step
 
     export = exports[0]
-    shape = import_step(export["path"])
+    try:
+        shape = import_step(export["path"])
+        if not list(shape.faces()):
+            raise ValueError("STEP import produced no geometry")
+    except Exception as exc:
+        return [], [], [
+            {
+                "type": "render_step_failed",
+                "label": export.get("label"),
+                "path": export["path"],
+                "message": str(exc),
+            }
+        ]
     views_dir = run_dir / "views"
     rendered: list[dict[str, Any]] = []
     for name, origin in VIEWPORTS.items():
@@ -375,7 +397,7 @@ def _render_step_artifacts(run_dir: Path) -> tuple[list[dict[str, Any]], list[di
                 "viewport_origin": list(origin),
             }
         )
-    return rendered, sections
+    return rendered, sections, []
 
 
 def _render_raster_artifacts(run_dir: Path) -> list[dict[str, Any]]:
@@ -410,7 +432,7 @@ def render_run(run_dir: Path) -> dict[str, Any]:
         inspect_run(run_dir)
 
     spatial = read_json(spatial_path)
-    views, sections = _render_step_artifacts(run_dir)
+    views, sections, warnings = _render_step_artifacts(run_dir)
     rasters = _render_raster_artifacts(run_dir)
     contact_sheet = run_dir / "views" / "contact.png"
     contact_panels = _draw_with_pillow(contact_sheet, spatial, rasters=rasters)
@@ -422,6 +444,7 @@ def render_run(run_dir: Path) -> dict[str, Any]:
         "sections": sections,
         "rasters": rasters,
         "contact_panels": contact_panels,
+        "warnings": warnings,
     }
     manifest_path = run_dir / "views" / "render_manifest.json"
     write_json(manifest_path, manifest)

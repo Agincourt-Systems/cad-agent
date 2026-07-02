@@ -202,3 +202,27 @@
   fixture/reference denylist; (2) a mistyped `dimension`/`topology` target raised
   an uncaught `KeyError` aborting the whole evaluate — now degrades to a graceful
   failed check. Red state confirmed, fixed, merged with `98 passed`.
+
+## 2026-07-02
+
+- Ran a full-repository bug review (all 13 `src/cadx` modules). Confirmed by
+  direct reproduction that the evaluator still crashed on four
+  plausible-authoring-error shapes ADR 0021's resolution guard did not cover
+  (non-scalar targets, `None` topology counts, `feature_dimension` on a missing
+  property, exact clearance without STEP exports, plus a narrow CoM-resolver
+  except clause), that `cadx loop` dropped `--timeout-seconds` on the evaluate
+  leg, and that one unreadable STEP export aborted `inspect`/`render` — in the
+  worker this converted a successful build into a failed run. Lesser
+  findings (exit-code inconsistency for `evaluate`, duplicate publish labels,
+  `next_run_dir` race, ASCII-STL sniffing, sweep-id path safety) recorded in
+  the review conversation for future ADRs.
+- Started ADR 0022 on `claude/adr-0022-graceful-evaluation`. Red state
+  confirmed: all 8 new tests failed as predicted. Notable: `import_step` on
+  garbage returns an *empty* shape (OCCT parse error on stdout, no exception),
+  so the ingestion guards treat a faceless import as a failure too.
+- Implemented value-side graceful degradation in `evaluate.py` (merging the
+  duplicate `_check_dimension`/`_check_topology` into `_check_scalar_target`),
+  the loop timeout passthrough, and per-export STEP guards in
+  `inspector.py`/`renderer.py` with agent-visible `warnings` in `spatial.json`
+  and `render_manifest.json`. Full suite `106 passed` (98 + 8 new), merged to
+  `master`.

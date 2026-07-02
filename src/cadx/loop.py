@@ -109,7 +109,9 @@ def loop_until_done(
             }
 
         render_payload = render_run(run_dir)
-        evaluation = evaluate_run(run_dir, requirements)
+        # The evaluate leg shares the caller's timeout budget: a parametric
+        # check re-runs the design, so it must not revert to the default.
+        evaluation = evaluate_run(run_dir, requirements, timeout_seconds)
         final_report_path = evaluation["report_path"]
         iteration_record["render"] = render_payload
         iteration_record["evaluation"] = evaluation

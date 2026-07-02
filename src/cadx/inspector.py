@@ -243,19 +243,42 @@ def _detected_topology_features(shape: Any, label: str) -> list[dict[str, Any]]:
     return detected
 
 
-def _auto_detect_features(diagnostics: dict[str, Any], run_dir: Path) -> list[dict[str, Any]]:
-    """Load STEP exports and return automatically detected features."""
+def _auto_detect_features(
+    diagnostics: dict[str, Any], run_dir: Path
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Load STEP exports and return detected features plus ingestion warnings.
+
+    Each export is guarded individually: a corrupt or truncated STEP file must
+    degrade detection for that one object, not abort the whole inspection (and,
+    since the worker inspects inside its main try-block, not convert a
+    successful build into a failed run). ``import_step`` on garbage can either
+    raise or quietly return an *empty* shape depending on the OCCT version, so
+    an import that yields no faces is treated as the same failure.
+    """
 
     try:
         from build123d import import_step
     except Exception:
-        return []
+        return [], []
 
     detected: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     for export in _step_exports(diagnostics, run_dir):
-        shape = import_step(export["path"])
-        detected.extend(_detected_topology_features(shape, export.get("label", "object")))
-    return detected
+        try:
+            shape = import_step(export["path"])
+            if not list(shape.faces()):
+                raise ValueError("STEP import produced no geometry")
+            detected.extend(_detected_topology_features(shape, export.get("label", "object")))
+        except Exception as exc:
+            warnings.append(
+                {
+                    "type": "feature_detection_failed",
+                    "label": export.get("label"),
+                    "path": export["path"],
+                    "message": str(exc),
+                }
+            )
+    return detected, warnings
 
 
 def _coerce_point(value: Any) -> list[float] | None:
@@ -420,16 +443,18 @@ def inspect_run(run_dir: Path) -> dict[str, Any]:
 
     diagnostics = read_json(run_dir / "diagnostics.json")
     objects = [_with_bbox_size(dict(obj)) for obj in diagnostics.get("published", [])]
-    features = _merge_features(
-        list(diagnostics.get("features", [])),
-        _auto_detect_features(diagnostics, run_dir),
-    )
+    detected, detection_warnings = _auto_detect_features(diagnostics, run_dir)
+    features = _merge_features(list(diagnostics.get("features", [])), detected)
     spatial = {
         "schema_version": "1.0",
         "units": diagnostics.get("units", "mm"),
         "objects": objects,
         "features": features,
     }
+    # Ingestion warnings are agent-visible facts about this run, so they live in
+    # spatial.json; the key is additive and only present when something failed.
+    if detection_warnings:
+        spatial["warnings"] = detection_warnings
     assembly = _assembly_center_of_mass(objects)
     if assembly is not None:
         spatial["assembly"] = assembly

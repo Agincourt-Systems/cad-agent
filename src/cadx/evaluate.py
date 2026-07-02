@@ -104,37 +104,43 @@ def _resolve_dimension_or_error(spatial: dict[str, Any], check: dict[str, Any]) 
         }
 
 
-def _check_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate a scalar dimension exact or range check."""
+def _scalar_or_error(observed: Any, check: dict[str, Any]) -> tuple[float | None, dict[str, Any] | None]:
+    """Coerce a resolved target value to a scalar, or build a failed record.
+
+    Resolution can succeed and still hand back something no numeric clause can
+    judge: a vector (the author forgot a trailing ``.x``) or ``None`` (a
+    topology selector the object could not count). Those fail the one check
+    with a descriptive error, completing the graceful-degradation contract that
+    ``_resolve_dimension_or_error`` starts.
+    """
+
+    try:
+        return float(observed), None
+    except (TypeError, ValueError):
+        return None, {
+            "id": check["id"],
+            "type": check["type"],
+            "status": "fail",
+            "observed": observed,
+            "error": f"target {check['target']!r} resolved to non-numeric value {observed!r}",
+        }
+
+
+def _check_scalar_target(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate a scalar exact/range check (``dimension`` and ``topology``)."""
 
     observed, error = _resolve_dimension_or_error(spatial, check)
     if error is not None:
         return error
-    expected = _numeric_expectation(check)
-    tolerance = check.get("tolerance", 0)
-    passed = _numeric_status(float(observed), check)
-    return {
-        "id": check["id"],
-        "type": "dimension",
-        "status": "pass" if passed else "fail",
-        "observed": observed,
-        "expected": expected,
-        "tolerance": tolerance,
-    }
-
-
-def _check_topology(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate topology counts through the same target-path grammar."""
-
-    observed, error = _resolve_dimension_or_error(spatial, check)
+    scalar, error = _scalar_or_error(observed, check)
     if error is not None:
         return error
     expected = _numeric_expectation(check)
     tolerance = check.get("tolerance", 0)
-    passed = _numeric_status(float(observed), check)
+    passed = _numeric_status(scalar, check)
     return {
         "id": check["id"],
-        "type": "topology",
+        "type": check["type"],
         "status": "pass" if passed else "fail",
         "observed": observed,
         "expected": expected,
@@ -220,18 +226,53 @@ def _step_export_index(run_dir: Path) -> dict[str, Path]:
     }
 
 
+def _exact_clearance_failure(check: dict[str, Any], error: str) -> dict[str, Any]:
+    """Failed exact-clearance record for unresolvable inputs.
+
+    Matches ``interference``'s graceful degradation: a label with no STEP export
+    (synthetic publication, failed export, or typo) fails this one check with a
+    descriptive error instead of raising a bare ``KeyError`` out of the whole
+    evaluation.
+    """
+
+    return {
+        "id": check["id"],
+        "type": "clearance",
+        "method": "exact",
+        "status": "fail",
+        "error": error,
+        "between": check["between"],
+        "tolerance": check.get("tolerance", 0),
+    }
+
+
 def _check_exact_clearance(run_dir: Path, check: dict[str, Any]) -> dict[str, Any]:
     """Evaluate exact BREP clearance from exported STEP artifacts."""
 
+    left_ref, right_ref = check["between"]
+    try:
+        left_label = _label_from_ref(left_ref)
+        right_label = _label_from_ref(right_ref)
+    except ValueError as exc:
+        return _exact_clearance_failure(check, str(exc))
+    try:
+        exports = _step_export_index(run_dir)
+    except Exception as exc:
+        return _exact_clearance_failure(check, f"no readable diagnostics for STEP exports: {exc}")
+    missing = [label for label in (left_label, right_label) if label not in exports]
+    if missing:
+        return _exact_clearance_failure(
+            check, f"no STEP export for {', '.join(repr(label) for label in missing)}"
+        )
+
     from build123d import import_step
 
-    left_ref, right_ref = check["between"]
-    exports = _step_export_index(run_dir)
-    left_label = _label_from_ref(left_ref)
-    right_label = _label_from_ref(right_ref)
-    left_shape = import_step(exports[left_label])
-    right_shape = import_step(exports[right_label])
-    observed = float(left_shape.distance(right_shape))
+    try:
+        left_shape = import_step(exports[left_label])
+        right_shape = import_step(exports[right_label])
+        observed = float(left_shape.distance(right_shape))
+    except Exception as exc:
+        return _exact_clearance_failure(check, f"could not measure exact clearance: {exc}")
     expected = _numeric_expectation(check)
     tolerance = check.get("tolerance", 0)
     passed = _numeric_status(observed, check)
@@ -274,17 +315,32 @@ def _check_feature_dimension(spatial: dict[str, Any], check: dict[str, Any]) -> 
     observed = [feature.get(property_name) for feature in selected]
     expected = check["equals"]
     tolerance = check.get("tolerance", 0)
-    passed = bool(observed) and all(
-        _within_tolerance(float(value), float(expected), float(tolerance)) for value in observed
-    )
-    return {
+    result = {
         "id": check["id"],
         "type": "feature_dimension",
-        "status": "pass" if passed else "fail",
         "observed": observed,
         "expected": expected,
         "tolerance": tolerance,
     }
+    # A selected feature may simply not carry the property (or carry a
+    # non-numeric value); that is an authoring/publication mismatch, so the one
+    # check fails with the offending feature named rather than crashing the
+    # whole evaluation on float(None).
+    values: list[float] = []
+    for feature, value in zip(selected, observed):
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            result["status"] = "fail"
+            result["error"] = (
+                f"feature {feature.get('id')!r} has no numeric {property_name!r} (got {value!r})"
+            )
+            return result
+    passed = bool(values) and all(
+        _within_tolerance(value, float(expected), float(tolerance)) for value in values
+    )
+    result["status"] = "pass" if passed else "fail"
+    return result
 
 
 def _resolve_features(spatial: dict[str, Any], selector: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
@@ -526,7 +582,9 @@ def _resolve_center_of_mass(spatial: dict[str, Any], target: str) -> tuple[list[
         return [float(component) for component in assembly["center_of_mass"]], None
     try:
         value = _resolve_dimension(spatial, target)
-    except (KeyError, ValueError) as exc:
+    except (KeyError, ValueError, IndexError, TypeError) as exc:
+        # The same failure set _resolve_dimension_or_error guards: a path can
+        # also index into a scalar (TypeError) or past a vector (IndexError).
         return None, f"could not resolve center of mass target {target!r}: {exc}"
     if not isinstance(value, (list, tuple)) or len(value) != 3:
         return None, f"center of mass target {target!r} is not a 3-vector"
@@ -778,10 +836,8 @@ def _evaluate_check(
     """Route a requirement entry to its evaluator."""
 
     check_type = check["type"]
-    if check_type == "dimension":
-        return _check_dimension(spatial, check)
-    if check_type == "topology":
-        return _check_topology(spatial, check)
+    if check_type in ("dimension", "topology"):
+        return _check_scalar_target(spatial, check)
     if check_type == "clearance":
         if check.get("method") == "exact":
             return _check_exact_clearance(run_dir, check)
