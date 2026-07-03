@@ -117,3 +117,25 @@ declared relationship is recorded on the spatial object, and cross-part checks
 `stability`) verify the assembled geometry. Multi-part runs additionally export
 a combined `assembly.step`/`.stl`/`.glb` and render the whole assembly on the
 contact sheet.
+
+Kinematic kinds pose the mate about the target frame's local Z axis:
+`kind="revolute"` (`angle` degrees), `kind="prismatic"` (`travel` mm), or
+`kind="cylindrical"` (both), with optional `angle_range`/`travel_range` limits
+that flag out-of-range poses. Feed the pose from `params` and sweep it with a
+`parametric` check to verify the whole motion envelope:
+
+```python
+publish("lid", lid, mate=mate(to="box", kind="revolute",
+        anchor=Location((0, -40, 0)), target=Location((0, 40, 20), (90, 0, 0)),
+        angle=params.get("lid_angle", 0), angle_range=(0, 110)))
+```
+
+```yaml
+- id: lid_swing_clear
+  type: parametric
+  params: [{lid_angle: 0}, {lid_angle: 55}, {lid_angle: 110}]
+  checks:
+    - id: no_collision
+      type: interference
+      tolerance: 0.001
+```

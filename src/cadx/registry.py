@@ -27,6 +27,17 @@ def clear_registry() -> None:
     _PART_META.clear()
 
 
+# Pose variables each mate kind accepts (ADR 0025). The joint axis is the
+# mated frame's local Z: revolute rotates about it, prismatic slides along it,
+# cylindrical does both. Ranges follow their pose variable.
+_MATE_KIND_POSES: dict[str, tuple[str, ...]] = {
+    "rigid": (),
+    "revolute": ("angle",),
+    "prismatic": ("travel",),
+    "cylindrical": ("angle", "travel"),
+}
+
+
 def mate(
     to: str,
     *,
@@ -34,26 +45,77 @@ def mate(
     target: Any = None,
     joint: str | None = None,
     target_joint: str | None = None,
+    kind: str = "rigid",
+    angle: float | None = None,
+    travel: float | None = None,
+    angle_range: Any = None,
+    travel_range: Any = None,
 ) -> dict[str, Any]:
-    """Declare a rigid mate: this part's frame coincides with one on ``to``.
+    """Declare a mate: this part's frame joins one on ``to``, posed by ``kind``.
 
-    Two spellings of the same primitive (ADR 0024). Explicit frames:
-    ``anchor`` is a build123d ``Location`` (or bare 3-sequence) on this part
-    and ``target`` one on the already-published part ``to``; the harness
-    derives the placement ``parent_placement * target * anchor⁻¹``. Native
-    joints: ``joint``/``target_joint`` name ``RigidJoint``s created on the two
-    shapes, whose ``relative_location``s become the frames (``target_joint``
-    defaults to ``joint``). The mate resolves to an ordinary placement before
-    inspection and export, so every downstream stage is unchanged.
+    Two spellings of the frames (ADR 0024). Explicit: ``anchor`` is a build123d
+    ``Location`` (or bare 3-sequence) on this part and ``target`` one on the
+    already-published part ``to``. Native joints: ``joint``/``target_joint``
+    name ``RigidJoint``s on the two shapes whose ``relative_location``s become
+    the frames (``target_joint`` defaults to ``joint``).
+
+    ``kind`` selects the joint type (ADR 0025): ``"rigid"`` (default) locks the
+    frames together; ``"revolute"`` rotates the child ``angle`` degrees about
+    the target frame's Z axis; ``"prismatic"`` slides it ``travel`` mm along
+    that axis; ``"cylindrical"`` does both. The placement resolves to
+    ``parent * target * J(pose) * anchor⁻¹``. Optional ``angle_range`` /
+    ``travel_range`` declare joint limits: an out-of-range pose is placed as
+    requested and flagged with a ``mate_out_of_range`` warning. A pose argument
+    foreign to the kind is an immediate ``ValueError`` so the authoring error
+    is attributable to the design line that made it.
     """
+
+    if kind not in _MATE_KIND_POSES:
+        raise ValueError(f"unknown mate kind {kind!r}; expected one of {sorted(_MATE_KIND_POSES)}")
+    allowed = _MATE_KIND_POSES[kind]
+    for name, value in (("angle", angle), ("angle_range", angle_range)):
+        if value is not None and "angle" not in allowed:
+            raise ValueError(f"{name} does not apply to a {kind!r} mate")
+    for name, value in (("travel", travel), ("travel_range", travel_range)):
+        if value is not None and "travel" not in allowed:
+            raise ValueError(f"{name} does not apply to a {kind!r} mate")
 
     if joint is None and (anchor is None or target is None):
         raise ValueError("mate() needs either joint=... or both anchor=... and target=...")
     if joint is not None and (anchor is not None or target is not None):
         raise ValueError("mate() takes either joint names or anchor/target frames, not both")
+
+    spec: dict[str, Any]
     if joint is not None:
-        return {"to": to, "joint": joint, "target_joint": target_joint or joint}
-    return {"to": to, "anchor": anchor, "target": target}
+        spec = {"to": to, "joint": joint, "target_joint": target_joint or joint}
+    else:
+        spec = {"to": to, "anchor": anchor, "target": target}
+    # Kinematic kinds always record their pose (defaulting to the zero pose)
+    # so the spatial record states the posed value explicitly; rigid mates
+    # carry no extra keys, keeping ADR 0024 records byte-identical.
+    if kind != "rigid":
+        spec["kind"] = kind
+        if "angle" in allowed:
+            spec["angle"] = float(angle) if angle is not None else 0.0
+            if angle_range is not None:
+                spec["angle_range"] = _pose_range(angle_range, "angle_range")
+        if "travel" in allowed:
+            spec["travel"] = float(travel) if travel is not None else 0.0
+            if travel_range is not None:
+                spec["travel_range"] = _pose_range(travel_range, "travel_range")
+    return spec
+
+
+def _pose_range(value: Any, name: str) -> list[float]:
+    """Validate and normalize a declared (min, max) joint limit."""
+
+    try:
+        low, high = float(value[0]), float(value[1])
+    except (TypeError, ValueError, IndexError) as exc:
+        raise ValueError(f"{name} must be a (min, max) pair: {exc}") from exc
+    if len(value) != 2 or low > high:
+        raise ValueError(f"{name} must be a (min, max) pair with min <= max, got {value!r}")
+    return [low, high]
 
 
 def publish(

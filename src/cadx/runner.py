@@ -195,33 +195,87 @@ def _mate_frames(entry: dict[str, Any], parent: dict[str, Any]) -> tuple[Any, An
     return spec["anchor"], spec["target"]
 
 
-def _mate_placement(entry: dict[str, Any], parent: dict[str, Any]) -> Any:
-    """Compute the placement a mate resolves to: ``parent * target * anchor⁻¹``.
+def _mate_pose(spec: dict[str, Any]) -> tuple[str, float, float]:
+    """Return ``(kind, angle, travel)`` for a mate spec, defaulting to rigid."""
 
-    Synthetic dict publications use plain position arithmetic so the mate
-    machinery stays testable without a CAD kernel (matching ADR 0014's
-    synthetic placements); real shapes compose build123d Locations, which the
-    ADR 0024 kernel probe verified reproduces ``RigidJoint.connect_to``.
+    kind = spec.get("kind", "rigid")
+    angle = float(spec.get("angle", 0.0) or 0.0)
+    travel = float(spec.get("travel", 0.0) or 0.0)
+    return kind, angle, travel
+
+
+def _mate_placement(entry: dict[str, Any], parent: dict[str, Any]) -> Any:
+    """Compute the placement a mate resolves to: ``parent * target * J * anchor⁻¹``.
+
+    ``J`` is the ADR 0025 pose about the target frame's local Z —
+    ``Location((0, 0, travel), (0, 0, angle))`` — and the identity for rigid
+    mates, reducing exactly to ADR 0024. Synthetic dict publications use plain
+    position arithmetic so the mate machinery stays testable without a CAD
+    kernel: their frames carry no orientation, so prismatic travel is a Z
+    offset while revolute/cylindrical (a rotation of a bare bbox has no
+    defined meaning) raise into the ``mate_failed`` degradation path. Real
+    shapes compose build123d Locations, which the ADR 0024/0025 kernel probes
+    verified against ``RigidJoint.connect_to`` and hand-checked hinge poses.
     """
 
     anchor, target = _mate_frames(entry, parent)
+    kind, angle, travel = _mate_pose(entry["mate"])
     if isinstance(entry["object"], dict):
+        if kind in ("revolute", "cylindrical"):
+            raise ValueError(
+                f"{kind!r} mate requires real geometry; synthetic publications "
+                "support rigid and prismatic mates only"
+            )
         anchor_position = _placement_position(anchor)
         target_position = _placement_position(target)
         if anchor_position is None or target_position is None:
             raise ValueError("synthetic mates need 3-sequence anchor/target frames")
         parent_position = _placement_position(parent.get("placement")) or [0.0, 0.0, 0.0]
+        pose_offset = [0.0, 0.0, travel]
         return [
-            parent_value + target_value - anchor_value
-            for parent_value, target_value, anchor_value in zip(
-                parent_position, target_position, anchor_position
+            parent_value + target_value - anchor_value + pose_value
+            for parent_value, target_value, anchor_value, pose_value in zip(
+                parent_position, target_position, anchor_position, pose_offset
             )
         ]
-    placement = _location_from(target) * _location_from(anchor).inverse()
+    placement = _location_from(target)
+    if kind != "rigid":
+        from build123d import Location
+
+        placement = placement * Location((0.0, 0.0, travel), (0.0, 0.0, angle))
+    placement = placement * _location_from(anchor).inverse()
     parent_placement = parent.get("placement")
     if parent_placement is None:
         return placement
     return _location_from(parent_placement) * placement
+
+
+def _pose_range_warnings(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Warn when a resolved pose sits outside its declared joint limits.
+
+    The part is still placed at the requested pose — the geometry stays honest
+    to what was asked and downstream checks see the offending configuration —
+    so the warning is the machine-visible record of the limit violation.
+    """
+
+    spec = entry["mate"]
+    warnings: list[dict[str, Any]] = []
+    for pose_key, range_key in (("angle", "angle_range"), ("travel", "travel_range")):
+        declared = spec.get(range_key)
+        if declared is None:
+            continue
+        value = float(spec.get(pose_key, 0.0) or 0.0)
+        low, high = float(declared[0]), float(declared[1])
+        if not low <= value <= high:
+            warnings.append(
+                {
+                    "type": "mate_out_of_range",
+                    "label": entry["label"],
+                    "message": f"{pose_key} {value:g} outside declared {range_key} "
+                    f"[{low:g}, {high:g}] on {entry['label']!r}",
+                }
+            )
+    return warnings
 
 
 def _resolve_mates(published: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -273,6 +327,7 @@ def _resolve_mates(published: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             try:
                 entry["placement"] = _mate_placement(entry, parent)
+                warnings.extend(_pose_range_warnings(entry))
             except Exception as exc:
                 warnings.append({"type": "mate_failed", "label": label, "message": str(exc)})
                 unplaced.add(label)
@@ -338,11 +393,14 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
     if placement_record is not None:
         normalized["placement"] = placement_record
     # Record the declared relationship (JSON-safe fields only) alongside the
-    # resolved transform, so agents see why the part sits where it does.
+    # resolved transform, so agents see why the part sits where it does. The
+    # ADR 0025 pose fields ride along; rigid mates carry none of them.
     if entry.get("mate"):
         spec = entry["mate"]
         normalized["mate"] = {
-            key: spec[key] for key in ("to", "joint", "target_joint") if spec.get(key) is not None
+            key: spec[key]
+            for key in ("to", "joint", "target_joint", "kind", "angle", "travel", "angle_range", "travel_range")
+            if spec.get(key) is not None
         }
     return normalized
 

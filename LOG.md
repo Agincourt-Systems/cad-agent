@@ -263,3 +263,22 @@
   places tower at (20,5,18) and cap at (20,5,35) with the cap seated exactly
   on the tower top; shaded assembly render confirms. Full suite `119 passed`
   (112 + 7 new), merged to `master`.
+- Started ADR 0025 on `claude/adr-0025-kinematic-joints`: kinematic joint
+  types. Probe first: pose composes as one Location
+  (`parent * target * Location((0,0,travel),(0,0,angle)) * anchor^-1`, axis =
+  target frame local Z); b3d `RevoluteJoint` exposes only `relative_axis` (no
+  angle-zero reference), so native kinematic-joint consumption is deferred.
+  Red state confirmed: 7 new tests failed (`mate()` rejected `kind`).
+- Implemented `mate(kind="revolute"|"prismatic"|"cylindrical", angle=,
+  travel=, angle_range=, travel_range=)` with design-time validation of
+  foreign pose args, pose math in `_mate_placement` (synthetic dicts support
+  prismatic; revolute on a dict degrades to `mate_failed`),
+  `mate_out_of_range` warnings that still place the requested pose, and pose
+  fields on the spatial mate record (rigid records byte-identical). Zero
+  evaluator changes: motion envelopes are ADR 0020 parametric sweeps over a
+  params-driven pose — pinned by the flagship interference-sweep test and a
+  README recipe.
+- Verified end-to-end on a post/wall/arm demo: renders at 0/90 deg show the
+  arm clear then colliding, with the out-of-range warning emitted at 90 deg
+  against a declared 75 deg limit. Full suite `131 passed` (124 + 7 new),
+  merged to `master`.
