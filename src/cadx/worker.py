@@ -22,6 +22,7 @@ from cadx.runner import (
     _export_flats,
     _export_sheet_metal,
     _normalize_published,
+    _resolve_mates,
     _runtime_metadata,
 )
 
@@ -65,9 +66,12 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
     params = load_yaml(run_dir / "params.resolved.yaml")
     try:
         raw_registry = _execute_design(source_path, params)
+        # ADR 0024: resolve declarative mates into placements before any
+        # normalization or export observes the geometry.
+        mate_warnings = _resolve_mates(raw_registry["published"])
         published = [_normalize_published(entry) for entry in raw_registry["published"]]
         exports: list[dict[str, Any]] = []
-        warnings: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = list(mate_warnings)
         for entry in raw_registry["published"]:
             entry_exports, entry_warnings = _export_build123d_object(entry, run_dir)
             exports.extend(entry_exports)

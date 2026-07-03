@@ -9,6 +9,7 @@ which keeps tests and synthetic examples lightweight.
 
 from cadx.registry import (
     clear_registry,
+    mate,
     publish,
     publish_feature,
     publish_flat,
@@ -19,6 +20,7 @@ from cadx.registry import (
 
 __all__ = [
     "clear_registry",
+    "mate",
     "publish",
     "publish_feature",
     "publish_flat",

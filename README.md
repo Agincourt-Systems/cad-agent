@@ -96,3 +96,24 @@ checks:
 (with bend lines on a `bend` layer and a `bends.json` table), `publish_part_meta`
 plus `cadx bom <run_dir>` produce a deterministic `bom.csv`/`bom.json`, and every
 export record carries explicit millimeter units.
+
+## Assemblies
+
+Position parts in a shared frame with `publish(label, obj,
+placement=Location(...))`, or state the mating intent and let the harness
+derive the transform:
+
+```python
+publish("base", base, role="final")
+publish("tower", tower,
+        mate=mate(to="base", anchor=Location((0, 0, -15)), target=Location((20, 5, 3))))
+# or, with build123d RigidJoints defined on the shapes:
+publish("tower", tower, mate=mate(to="base", joint="plug", target_joint="socket"))
+```
+
+Mates resolve to ordinary placements (chains allowed, any publish order), the
+declared relationship is recorded on the spatial object, and cross-part checks
+(`clearance`, `interference`, `feature_alignment`, `center_of_mass`,
+`stability`) verify the assembled geometry. Multi-part runs additionally export
+a combined `assembly.step`/`.stl`/`.glb` and render the whole assembly on the
+contact sheet.

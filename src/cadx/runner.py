@@ -156,6 +156,140 @@ def _placement_record(placement: Any) -> dict[str, list[float]] | None:
     return {"position": position, "orientation": orientation}
 
 
+def _location_from(value: Any) -> Any:
+    """Coerce a mate frame (Location, 3-sequence, or position mapping) to a Location.
+
+    Orientation is honored only on real ``Location`` values; sequence and
+    mapping forms are translation-only by design.
+    """
+
+    from build123d import Location
+
+    if isinstance(value, Location):
+        return value
+    position = _placement_position(value)
+    if position is None:
+        raise ValueError(f"cannot interpret {value!r} as a mate frame")
+    return Location(tuple(position))
+
+
+def _mate_frames(entry: dict[str, Any], parent: dict[str, Any]) -> tuple[Any, Any]:
+    """Return the raw (anchor, target) frames a mate spec designates.
+
+    The joint spelling reads ``RigidJoint.relative_location`` off both shapes;
+    a missing joint name raises so the caller degrades it to a ``mate_failed``
+    warning naming the part and joint.
+    """
+
+    spec = entry["mate"]
+    if spec.get("joint") is not None:
+        joints = getattr(entry["object"], "joints", None) or {}
+        parent_joints = getattr(parent["object"], "joints", None) or {}
+        joint_name = spec["joint"]
+        target_name = spec.get("target_joint") or joint_name
+        if joint_name not in joints:
+            raise ValueError(f"no joint {joint_name!r} on {entry['label']!r}")
+        if target_name not in parent_joints:
+            raise ValueError(f"no joint {target_name!r} on {parent['label']!r}")
+        return joints[joint_name].relative_location, parent_joints[target_name].relative_location
+    return spec["anchor"], spec["target"]
+
+
+def _mate_placement(entry: dict[str, Any], parent: dict[str, Any]) -> Any:
+    """Compute the placement a mate resolves to: ``parent * target * anchor⁻¹``.
+
+    Synthetic dict publications use plain position arithmetic so the mate
+    machinery stays testable without a CAD kernel (matching ADR 0014's
+    synthetic placements); real shapes compose build123d Locations, which the
+    ADR 0024 kernel probe verified reproduces ``RigidJoint.connect_to``.
+    """
+
+    anchor, target = _mate_frames(entry, parent)
+    if isinstance(entry["object"], dict):
+        anchor_position = _placement_position(anchor)
+        target_position = _placement_position(target)
+        if anchor_position is None or target_position is None:
+            raise ValueError("synthetic mates need 3-sequence anchor/target frames")
+        parent_position = _placement_position(parent.get("placement")) or [0.0, 0.0, 0.0]
+        return [
+            parent_value + target_value - anchor_value
+            for parent_value, target_value, anchor_value in zip(
+                parent_position, target_position, anchor_position
+            )
+        ]
+    placement = _location_from(target) * _location_from(anchor).inverse()
+    parent_placement = parent.get("placement")
+    if parent_placement is None:
+        return placement
+    return _location_from(parent_placement) * placement
+
+
+def _resolve_mates(published: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Resolve declarative mates into ordinary placements (ADR 0024).
+
+    Iterates to a fixpoint so chains resolve regardless of publish order. All
+    failure modes degrade to warnings rather than run failures: an unknown
+    target label, a parent that itself could not be placed, a frame/joint the
+    resolver cannot read, and mate cycles (whatever is left when no progress
+    is possible) each leave that part unplaced with a descriptive record.
+    """
+
+    index = {entry["label"]: entry for entry in published}
+    pending = {entry["label"]: entry for entry in published if entry.get("mate")}
+    unplaced: set[str] = set()
+    warnings: list[dict[str, Any]] = []
+    progressed = True
+    while pending and progressed:
+        progressed = False
+        for label in list(pending):
+            entry = pending[label]
+            to = entry["mate"].get("to")
+            parent = index.get(to)
+            if parent is None:
+                warnings.append(
+                    {
+                        "type": "mate_unresolved",
+                        "label": label,
+                        "message": f"no published object {to!r} to mate {label!r} to",
+                    }
+                )
+                unplaced.add(label)
+                del pending[label]
+                progressed = True
+                continue
+            if to in pending:
+                continue  # the parent's own mate must resolve first
+            if to in unplaced:
+                warnings.append(
+                    {
+                        "type": "mate_unresolved",
+                        "label": label,
+                        "message": f"mate target {to!r} is itself unplaced; {label!r} left unplaced",
+                    }
+                )
+                unplaced.add(label)
+                del pending[label]
+                progressed = True
+                continue
+            try:
+                entry["placement"] = _mate_placement(entry, parent)
+            except Exception as exc:
+                warnings.append({"type": "mate_failed", "label": label, "message": str(exc)})
+                unplaced.add(label)
+            del pending[label]
+            progressed = True
+    cycle_labels = sorted(pending)
+    for label in cycle_labels:
+        warnings.append(
+            {
+                "type": "mate_unresolved",
+                "label": label,
+                "message": f"mate cycle involving {cycle_labels}; {label!r} left unplaced",
+            }
+        )
+    return warnings
+
+
 def _translate_bbox(bbox: dict[str, list[float]], position: list[float]) -> dict[str, list[float]]:
     """Shift a synthetic bounding box by a placement translation."""
 
@@ -203,6 +337,13 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
     placement_record = _placement_record(placement)
     if placement_record is not None:
         normalized["placement"] = placement_record
+    # Record the declared relationship (JSON-safe fields only) alongside the
+    # resolved transform, so agents see why the part sits where it does.
+    if entry.get("mate"):
+        spec = entry["mate"]
+        normalized["mate"] = {
+            key: spec[key] for key in ("to", "joint", "target_joint") if spec.get(key) is not None
+        }
     return normalized
 
 

@@ -247,3 +247,19 @@
   planar-datum features stayed undoubled. Full suite `112 passed` (106 + 6
   new), merged to `master`. Joint-driven placement remains the next big
   assembly ADR if wanted.
+- Started ADR 0024 on `claude/adr-0024-joint-driven-placement`: declarative
+  mates. Kernel probe first: `target * anchor.inverse()` exactly reproduces
+  `RigidJoint.connect_to` placement, so `mate()` resolves to the existing
+  `placement` field and no downstream stage changes. Red state confirmed
+  (7 new tests failed; `publish` rejected the `mate` keyword).
+- Implemented `mate(to, anchor/target | joint/target_joint)` exported from
+  `cadx`, `publish(mate=...)` (mutually exclusive with `placement`),
+  `runner._resolve_mates` (fixpoint chain resolution; `mate_unresolved` /
+  `mate_failed` warnings for unknown targets, unplaced parents, bad joints,
+  and cycles), a JSON-safe `mate` record on spatial objects, and a README
+  Assemblies section. Added an unplaced-parent guard beyond the ADR list so a
+  child never silently mates against the origin.
+- Verified end-to-end: three-part demo (joints + chained explicit frames)
+  places tower at (20,5,18) and cap at (20,5,35) with the cap seated exactly
+  on the tower top; shaded assembly render confirms. Full suite `119 passed`
+  (112 + 7 new), merged to `master`.

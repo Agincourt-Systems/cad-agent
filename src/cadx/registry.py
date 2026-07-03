@@ -27,7 +27,38 @@ def clear_registry() -> None:
     _PART_META.clear()
 
 
-def publish(label: str, obj: Any, role: str = "part", placement: Any = None, **metadata: Any) -> None:
+def mate(
+    to: str,
+    *,
+    anchor: Any = None,
+    target: Any = None,
+    joint: str | None = None,
+    target_joint: str | None = None,
+) -> dict[str, Any]:
+    """Declare a rigid mate: this part's frame coincides with one on ``to``.
+
+    Two spellings of the same primitive (ADR 0024). Explicit frames:
+    ``anchor`` is a build123d ``Location`` (or bare 3-sequence) on this part
+    and ``target`` one on the already-published part ``to``; the harness
+    derives the placement ``parent_placement * target * anchor⁻¹``. Native
+    joints: ``joint``/``target_joint`` name ``RigidJoint``s created on the two
+    shapes, whose ``relative_location``s become the frames (``target_joint``
+    defaults to ``joint``). The mate resolves to an ordinary placement before
+    inspection and export, so every downstream stage is unchanged.
+    """
+
+    if joint is None and (anchor is None or target is None):
+        raise ValueError("mate() needs either joint=... or both anchor=... and target=...")
+    if joint is not None and (anchor is not None or target is not None):
+        raise ValueError("mate() takes either joint names or anchor/target frames, not both")
+    if joint is not None:
+        return {"to": to, "joint": joint, "target_joint": target_joint or joint}
+    return {"to": to, "anchor": anchor, "target": target}
+
+
+def publish(
+    label: str, obj: Any, role: str = "part", placement: Any = None, mate: Any = None, **metadata: Any
+) -> None:
     """Publish a named object for inspection and export.
 
     ``obj`` may be a real build123d shape or a dictionary containing already
@@ -38,9 +69,25 @@ def publish(label: str, obj: Any, role: str = "part", placement: Any = None, **m
     in a common assembly frame. When supplied, the harness applies it before
     computing bounding boxes, mass properties, and exports, so cross-part checks
     (hole alignment, interference) observe every part in one coordinate system.
+
+    ``mate`` is the declarative alternative (ADR 0024): a :func:`mate` spec
+    naming another published part and a pair of frames; the harness resolves it
+    into a placement. The two are mutually exclusive because a part cannot have
+    both a hand-computed transform and a derived one.
     """
 
-    _PUBLISHED.append({"label": label, "role": role, "object": obj, "placement": placement, "metadata": metadata})
+    if placement is not None and mate is not None:
+        raise ValueError("publish() accepts either placement or mate, not both")
+    entry: dict[str, Any] = {
+        "label": label,
+        "role": role,
+        "object": obj,
+        "placement": placement,
+        "metadata": metadata,
+    }
+    if mate is not None:
+        entry["mate"] = dict(mate)
+    _PUBLISHED.append(entry)
 
 
 def publish_flat(label: str, profile: Any, *, layer: str = "cut", thickness_mm: float | None = None, **meta: Any) -> None:
@@ -164,6 +211,10 @@ def snapshot_registry() -> dict[str, Any]:
         # build123d shapes must also be carried by reference, not deepcopied.
         if entry.get("flat") is not None:
             snapshot_entry["flat"] = entry["flat"]
+        # Mate specs may contain build123d Locations, carried by reference
+        # like placements; the runner resolves them into placements.
+        if entry.get("mate") is not None:
+            snapshot_entry["mate"] = entry["mate"]
         published.append(snapshot_entry)
     # Flat profiles keep their build123d object by reference (Open Cascade
     # handles are not deepcopy-safe) while their JSON-like metadata is copied.
