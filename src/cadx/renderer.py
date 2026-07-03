@@ -351,16 +351,70 @@ def _render_stl_shaded(stl_path: Path, target: Path, size: tuple[int, int] = (90
     image.save(target)
 
 
-def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, int, int]) -> None:
-    """Write one hidden-line SVG projection from a build123d shape."""
+def _nonempty(shape: Any) -> bool:
+    """True if a build123d shape carries any projectable geometry.
+
+    ``project_to_viewport`` on an empty shape collapses its look point to the
+    origin; for a viewport camera on the +Z axis (top / section_xy at
+    ``(0,0,100)``) the look direction then lands (anti)parallel to the default
+    ``viewport_up=(0,0,1)`` and OCCT's ``gp_Dir::Crossed`` throws "zero norm".
+    Guarding on emptiness here removes that crash class regardless of why the
+    shape came in empty (e.g. an empty ``Compound.intersect`` result).
+    """
+
+    if shape is None:
+        return False
+    try:
+        return bool(list(shape.faces()) or list(shape.edges()))
+    except Exception:
+        return False
+
+
+def _plane_section(shape: Any, plane: Any) -> Any:
+    """Section a shape by a plane, folding per-solid so a Compound sections.
+
+    ``Compound.intersect(Plane)`` returns an empty shape on build123d 0.10 even
+    when the child solids each intersect the plane, so the ADR-0023 combined
+    assembly export produced empty section views.  Intersecting each solid and
+    recombining the non-empty pieces restores real assembly sections; for a
+    single-solid import ``.solids()`` yields the one solid, so single-part
+    behaviour is unchanged.  Returns ``None`` when nothing crosses the plane.
+    """
+
+    from build123d import Compound
+
+    solids = list(shape.solids())
+    if not solids:
+        piece = shape.intersect(plane)
+        return piece if _nonempty(piece) else None
+    pieces = []
+    for solid in solids:
+        piece = solid.intersect(plane)
+        if _nonempty(piece):
+            pieces.append(piece)
+    if not pieces:
+        return None
+    return pieces[0] if len(pieces) == 1 else Compound(children=pieces)
+
+
+def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, int, int]) -> bool:
+    """Write one hidden-line SVG projection from a build123d shape.
+
+    Returns ``True`` if a file was written, ``False`` if the shape had no
+    projectable geometry (the caller should then not record the view).
+    """
 
     from build123d import ExportSVG, LineType
+
+    shapes = [shape] if hasattr(shape, "project_to_viewport") else list(shape)
+    shapes = [item for item in shapes if _nonempty(item)]
+    if not shapes:
+        return False
 
     exporter = ExportSVG(scale=10, margin=2)
     exporter.add_layer("Visible", line_color=(20, 20, 20))
     exporter.add_layer("Hidden", line_color=(130, 130, 130), line_type=LineType.ISO_DOT)
 
-    shapes = [shape] if hasattr(shape, "project_to_viewport") else list(shape)
     for item in shapes:
         visible, hidden = item.project_to_viewport(viewport_origin)
         if len(visible) > 0:
@@ -369,6 +423,7 @@ def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, 
             exporter.add_shape(hidden, layer="Hidden")
     target.parent.mkdir(parents=True, exist_ok=True)
     exporter.write(target)
+    return True
 
 
 def _render_step_artifacts(
@@ -413,7 +468,8 @@ def _render_step_artifacts(
     rendered: list[dict[str, Any]] = []
     for name, origin in VIEWPORTS.items():
         target = views_dir / f"{name}.svg"
-        _write_projection_svg(shape, target, origin)
+        if not _write_projection_svg(shape, target, origin):
+            continue
         rendered.append(
             {
                 "name": name,
@@ -428,11 +484,15 @@ def _render_step_artifacts(
     sections: list[dict[str, Any]] = []
     for name, (plane_name, origin) in SECTION_VIEWPORTS.items():
         plane = getattr(Plane, plane_name)
-        section_shape = shape.intersect(plane)
+        # Fold the section per-solid: Compound.intersect(Plane) is empty on
+        # build123d 0.10, so a combined assembly export would otherwise yield
+        # empty (and crash-prone) section views (see docs/log 2026-07-03).
+        section_shape = _plane_section(shape, plane)
         if section_shape is None:
             continue
         target = views_dir / f"{name}.svg"
-        _write_projection_svg(section_shape, target, origin)
+        if not _write_projection_svg(section_shape, target, origin):
+            continue
         sections.append(
             {
                 "name": name,
