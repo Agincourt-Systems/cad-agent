@@ -21,9 +21,17 @@ cadx init
 cadx run design.py --params params.yaml
 cadx inspect artifacts/runs/0001
 cadx render artifacts/runs/0001
+cadx shots artifacts/runs/0001 --views iso,side,top,front
 cadx evaluate artifacts/runs/0001 --requirements requirements.yaml
 cadx loop design.py --params params.yaml --requirements requirements.yaml --agent-command "<agent command>"
 ```
+
+`cadx shots` renders shaded PNG screenshots of the run's primary STL (the
+combined `assembly.stl` when a run has ≥2 parts, else the single part) from
+several named cameras — `iso`, `top`, `side`, `front`, `rear` — writing
+`shaded_<camera>.png` (default views `iso,side,top`; `--out DIR` to redirect).
+It is the shared, on-demand version of a multi-angle screenshot script;
+`render` still produces only the isometric shaded view in its contact sheet.
 
 If `build123d` is not installed, `cadx run` still starts and reports a clear
 dependency error when the design source imports `build123d`.

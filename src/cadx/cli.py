@@ -18,7 +18,7 @@ from cadx.evaluate import evaluate_run, sweep_run
 from cadx.files import init_project
 from cadx.inspector import inspect_run
 from cadx.loop import loop_until_done
-from cadx.renderer import render_run
+from cadx.renderer import render_run, render_shots
 from cadx.runner import run_design
 
 
@@ -47,6 +47,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     render_parser = subcommands.add_parser("render", help="Write visual contact sheet artifacts")
     render_parser.add_argument("run_dir", type=Path)
+
+    shots_parser = subcommands.add_parser(
+        "shots", help="Render shaded PNG screenshots from several named cameras"
+    )
+    shots_parser.add_argument("run_dir", type=Path)
+    shots_parser.add_argument(
+        "--views",
+        type=str,
+        default=None,
+        help="comma-separated camera names (default: iso,side,top). "
+        "Valid: iso,top,side,front,rear",
+    )
+    shots_parser.add_argument("--out", type=Path, default=None, help="output directory")
 
     evaluate_parser = subcommands.add_parser("evaluate", help="Evaluate a run against requirements")
     evaluate_parser.add_argument("run_dir", type=Path)
@@ -95,6 +108,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "render":
         _print(render_run(args.run_dir))
+        return 0
+    if args.command == "shots":
+        views = [name.strip() for name in args.views.split(",") if name.strip()] if args.views else None
+        try:
+            payload = render_shots(args.run_dir, views=views, out_dir=args.out)
+        except ValueError as exc:
+            _print({"status": "error", "message": str(exc)})
+            return 2
+        _print(payload)
         return 0
     if args.command == "evaluate":
         payload = evaluate_run(args.run_dir, args.requirements, args.timeout_seconds)

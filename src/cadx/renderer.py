@@ -297,12 +297,58 @@ def _project_iso(point: tuple[float, float, float]) -> tuple[float, float, float
     return screen_x, screen_y, depth
 
 
-def _render_stl_shaded(stl_path: Path, target: Path, size: tuple[int, int] = (900, 650)) -> None:
-    """Render a simple shaded isometric PNG from STL triangles.
+def _dot(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _orthographic_projector(right, up, forward):
+    """Build a projector for an orthonormal camera basis (ADR 0026).
+
+    ``screen_x = p·right`` and ``screen_y = -(p·up)`` — negated because image
+    ``y`` grows downward, so the camera ``up`` axis maps to *smaller* screen
+    ``y`` (higher on the page). ``depth = p·forward`` with ``forward`` pointing
+    from the model toward the camera, so larger depth is nearer and the
+    painter's-order fill (far→near) paints near triangles last.
+    """
+
+    right = _normalize(right)
+    up = _normalize(up)
+    forward = _normalize(forward)
+
+    def project(point):
+        return (_dot(point, right), -_dot(point, up), _dot(point, forward))
+
+    return project
+
+
+# Named cameras for `cadx shots`.  ``iso`` is the exact legacy projection (not
+# a basis approximation) so existing output is unchanged; the rest are
+# orthographic elevations/plans built from (right, up, forward) bases.
+SHADED_CAMERAS = {
+    "iso": _project_iso,
+    "top": _orthographic_projector((1, 0, 0), (0, 1, 0), (0, 0, 1)),    # look down -Z
+    "side": _orthographic_projector((1, 0, 0), (0, 0, 1), (0, 1, 0)),   # look along -Y
+    "front": _orthographic_projector((0, 1, 0), (0, 0, 1), (-1, 0, 0)),  # nose toward viewer
+    "rear": _orthographic_projector((0, -1, 0), (0, 0, 1), (1, 0, 0)),  # tail toward viewer
+}
+
+
+def _render_stl_shaded(
+    stl_path: Path,
+    target: Path,
+    size: tuple[int, int] = (900, 650),
+    project=_project_iso,
+) -> None:
+    """Render a simple shaded PNG from STL triangles.
 
     This is a deterministic software rasterizer. It is intentionally small and
     dependency-light so shaded output works in headless environments where VTK
     or browser rendering may not be available.
+
+    ``project`` maps a 3D point to ``(screen_x, screen_y, depth)`` and defaults
+    to the legacy isometric projection, so callers that pass no projector get
+    byte-identical output to before (ADR 0026). Named cameras live in
+    ``SHADED_CAMERAS``.
     """
 
     from PIL import Image, ImageDraw
@@ -316,7 +362,7 @@ def _render_stl_shaded(stl_path: Path, target: Path, size: tuple[int, int] = (90
 
     projected = [
         {
-            "points": [_project_iso(vertex) for vertex in triangle],
+            "points": [project(vertex) for vertex in triangle],
             "normal": _triangle_normal(triangle),
         }
         for triangle in triangles
@@ -563,4 +609,49 @@ def render_run(run_dir: Path) -> dict[str, Any]:
         + [view["path"] for view in views]
         + [section["path"] for section in sections]
         + [raster["path"] for raster in rasters],
+    }
+
+
+DEFAULT_SHOT_VIEWS = ("iso", "side", "top")
+
+
+def render_shots(
+    run_dir: Path,
+    views: list[str] | None = None,
+    out_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Render shaded PNG screenshots of a run from several named cameras.
+
+    The source is the run's primary STL — the combined ``assembly.stl`` when
+    present (so a multi-part run is shot as a whole assembly, exactly like
+    ``render``), else the single part.  One ``shaded_<camera>.png`` is written
+    per requested view (default ``iso``/``side``/``top``) into ``out_dir``
+    (default ``<run_dir>/views``).  ADR 0026.
+    """
+
+    names = list(views) if views else list(DEFAULT_SHOT_VIEWS)
+    unknown = [name for name in names if name not in SHADED_CAMERAS]
+    if unknown:
+        valid = ", ".join(sorted(SHADED_CAMERAS))
+        raise ValueError(f"unknown shot view(s) {unknown}: choose from {valid}")
+
+    exports = _stl_exports(run_dir)
+    if not exports:
+        return {"status": "ok", "source": None, "label": None, "shots": []}
+
+    export = _primary_export(exports)
+    stl_path = Path(export["path"])
+    target_dir = out_dir if out_dir is not None else run_dir / "views"
+
+    shots: list[dict[str, Any]] = []
+    for name in names:
+        target = target_dir / f"shaded_{name}.png"
+        _render_stl_shaded(stl_path, target, project=SHADED_CAMERAS[name])
+        shots.append({"name": name, "camera": name, "path": str(target)})
+
+    return {
+        "status": "ok",
+        "source": export["path"],
+        "label": export.get("label"),
+        "shots": shots,
     }

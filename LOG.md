@@ -286,3 +286,25 @@
   render of a four-part mated assembly (base, tower, revolute-posed swing arm
   at -35 deg, pivot boss) produced by the ADR 0024/0025 mate API, so the
   first image shows current capability.
+
+## ADR 0026 — multi-view shaded screenshots (`cadx shots`)
+
+- The shaded rasterizer was isometric-only (`_project_iso` hard-coded), so
+  the one real headless raster always showed a single angle. Downstream
+  (the `chupacabra-configuration` airframe README) that meant the wing
+  planform and fin profile were invisible, and a throwaway per-repo
+  screenshot script was written to render orthographic views from
+  `assembly.stl`. Generalised that into cadx.
+- `_render_stl_shaded` gained a `project` parameter (default `_project_iso`,
+  so `render` output is byte-stable); added `_orthographic_projector` +
+  a `SHADED_CAMERAS` registry (`iso`/`top`/`side`/`front`/`rear`) and a new
+  `render_shots` + `cadx shots <run_dir> [--views ...] [--out DIR]` command.
+  Multi-part runs shoot the combined `assembly.stl` via `_primary_export`,
+  like `render`.
+- TDD (`tests/test_multi_view_shots.py`): the behavioural test renders a
+  plate wide in Y / thin in Z and asserts the `top` view's content is
+  proportionally taller than the `side` view's — proving the projection,
+  not just the filename, changed. Red→green; full suite green, legacy
+  `render` path untouched.
+- Verified on the real airframe: `top` = wing planform, `side` = fin
+  profile, `front` = circular body with the cruciform/wing cross.
