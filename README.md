@@ -9,7 +9,7 @@ The first implementation is intentionally CLI-first. MCP and richer browser
 viewer integrations can wrap the same run artifacts once the local contract is
 stable.
 
-![Shaded CAD output](docs/images/cad-output.png)
+![Shaded render of a four-part mated assembly: base plate, tower, revolute-posed swing arm, and pivot boss](docs/images/cad-output.png)
 
 ## Quick Start
 

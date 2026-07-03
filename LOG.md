@@ -282,3 +282,7 @@
   arm clear then colliding, with the out-of-range warning emitted at 90 deg
   against a declared 75 deg limit. Full suite `131 passed` (124 + 7 new),
   merged to `master`.
+- Replaced the README hero screenshot (single slotted plate) with a shaded
+  render of a four-part mated assembly (base, tower, revolute-posed swing arm
+  at -35 deg, pivot boss) produced by the ADR 0024/0025 mate API, so the
+  first image shows current capability.
