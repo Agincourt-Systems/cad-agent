@@ -226,3 +226,24 @@
   `inspector.py`/`renderer.py` with agent-visible `warnings` in `spatial.json`
   and `render_manifest.json`. Full suite `106 passed` (98 + 8 new), merged to
   `master`.
+
+## 2026-07-03
+
+- Assessed assembly capability on request: placement frame (ADR 0014),
+  cross-part checks, and assembly CoM are solid; gaps were no combined
+  assembly artifact, first-part-only rendering, and no joint/mate solver.
+- Started ADR 0023 on `claude/adr-0023-assembly-rendering` for the first two
+  gaps. Kernel probe confirmed `Compound(children=[...])` bakes placements and
+  round-trips STEP with one solid per part. Red state confirmed: 5 of 6 new
+  tests failed (the single-part non-regression pin is green-before by design).
+- Implemented `runner._export_assembly` (combined `assembly.step/stl/glb`,
+  records flagged `assembly: true`, emitted for >=2 real published shapes,
+  `assembly_export_skipped` warning on a label collision), worker wiring,
+  inspector exclusion of the flagged export from feature detection, renderer
+  preference for the assembly artifact in projections and the shaded raster,
+  and a union-bbox `_summary_line`/`_bounds_union` contact-sheet summary.
+- Verified end-to-end on a demo base+tower design: shaded iso and contact
+  sheet show both placed parts, summary reports the assembly union bbox, and
+  planar-datum features stayed undoubled. Full suite `112 passed` (106 + 6
+  new), merged to `master`. Joint-driven placement remains the next big
+  assembly ADR if wanted.

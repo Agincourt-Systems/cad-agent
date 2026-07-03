@@ -16,6 +16,7 @@ from cadx.files import load_yaml, write_json
 from cadx.runner import (
     _auto_export_flats,
     _execute_design,
+    _export_assembly,
     _export_bend_table,
     _export_build123d_object,
     _export_flats,
@@ -97,6 +98,13 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
         bend_table_exports, bend_table_warnings = _export_bend_table(sheet_metal_entries, run_dir)
         exports.extend(bend_table_exports)
         warnings.extend(bend_table_warnings)
+
+        # ADR 0023: one combined artifact of the whole placed assembly for
+        # viewing and downstream consumers; the per-part exports above remain
+        # the fabrication truth.
+        assembly_exports, assembly_warnings = _export_assembly(raw_registry["published"], run_dir)
+        exports.extend(assembly_exports)
+        warnings.extend(assembly_warnings)
 
         diagnostics = {
             "schema_version": "1.0",

@@ -29,17 +29,60 @@ SECTION_VIEWPORTS = {
 }
 
 
+def _bounds_union(objects: list[dict[str, Any]]) -> dict[str, list[float]] | None:
+    """Union bounding box across all objects, or ``None`` without min/max data.
+
+    For a single object this is exactly its own bbox, so single-part output is
+    unchanged; for an assembly it is the extent of the whole placed design.
+    """
+
+    mins = [obj["bbox"]["min"] for obj in objects if "min" in obj.get("bbox", {}) and "max" in obj.get("bbox", {})]
+    maxs = [obj["bbox"]["max"] for obj in objects if "min" in obj.get("bbox", {}) and "max" in obj.get("bbox", {})]
+    if not mins:
+        return None
+    low = [min(vector[axis] for vector in mins) for axis in range(3)]
+    high = [max(vector[axis] for vector in maxs) for axis in range(3)]
+    return {"min": low, "max": high, "size": [high_v - low_v for low_v, high_v in zip(low, high)]}
+
+
+def _summary_line(spatial: dict[str, Any]) -> str:
+    """Contact-sheet summary text, unit-testable without decoding PNG bytes.
+
+    One object keeps the original per-part line (bbox + face/edge counts). An
+    assembly reports the union extent instead — per-part topology counts would
+    be misleading attributed to the whole, and the assembly's overall envelope
+    is what a human sanity-checks first.
+    """
+
+    objects = spatial.get("objects", [])
+    features = spatial.get("features", [])
+    summary = f"units={spatial.get('units', 'mm')} | objects={len(objects)} | features={len(features)}"
+    if len(objects) == 1:
+        first = objects[0]
+        size = first["bbox"].get("size", ["?", "?", "?"])
+        topology = first.get("topology", {})
+        summary += f" | bbox={size[0]} x {size[1]} x {size[2]}"
+        summary += f" | faces={topology.get('faces', '?')} | edges={topology.get('edges', '?')}"
+    elif objects:
+        union = _bounds_union(objects)
+        if union is not None:
+            size = union["size"]
+            summary += f" | assembly_bbox={size[0]:g} x {size[1]:g} x {size[2]:g}"
+    return summary
+
+
 def _placeholder_rectangle(draw: Any, box: tuple[int, int, int, int], objects: list[dict[str, Any]]) -> None:
     """Draw the deterministic bbox-scaled placeholder rectangle for a panel.
 
     Used only for panels with no real raster to embed (synthetic designs, or
     views the headless renderer cannot rasterize), so an agent still gets a
-    visual anchor.
+    visual anchor. The rectangle is proportioned to the union bbox so an
+    assembly's anchor reflects the whole design, not its first part.
     """
 
     if not objects:
         return
-    bbox = objects[0]["bbox"]
+    bbox = _bounds_union(objects) or objects[0]["bbox"]
     size = bbox.get("size", [1, 1, 1])
     max_size = max(size) or 1
     panel_w = box[2] - box[0] - 70
@@ -132,14 +175,7 @@ def _draw_with_pillow(
             _placeholder_rectangle(draw, box, objects)
             contact_panels.append({"label": label, "source": None, "path": None})
 
-    summary = f"units={spatial.get('units', 'mm')} | objects={len(objects)} | features={len(features)}"
-    if objects:
-        first = objects[0]
-        size = first["bbox"].get("size", ["?", "?", "?"])
-        topology = first.get("topology", {})
-        summary += f" | bbox={size[0]} x {size[1]} x {size[2]}"
-        summary += f" | faces={topology.get('faces', '?')} | edges={topology.get('edges', '?')}"
-    draw.text((24, 560), summary, fill=(20, 20, 20), font=font)
+    draw.text((24, 560), _summary_line(spatial), fill=(20, 20, 20), font=font)
 
     for index, feature in enumerate(features[:8]):
         draw.text((24, 590 + index * 14), f"{feature['id']}: {feature.get('kind')}", fill=(120, 20, 20), font=font)
@@ -192,6 +228,17 @@ def _stl_exports(run_dir: Path) -> list[dict[str, Any]]:
         if export.get("format") == "stl":
             exports.append({**export, "path": str(_resolve_export_path(run_dir, export["path"]))})
     return exports
+
+
+def _primary_export(exports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Choose the export to render: the combined assembly when one exists.
+
+    ADR 0023 flags the whole-assembly artifact with ``assembly: true``; when a
+    run has one, the projections/raster should show the assembled design. A
+    single-part run keeps the original first-export behavior.
+    """
+
+    return next((export for export in exports if export.get("assembly")), exports[0])
 
 
 def _normalize(vector: tuple[float, float, float]) -> tuple[float, float, float]:
@@ -327,11 +374,11 @@ def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, 
 def _render_step_artifacts(
     run_dir: Path,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Generate deterministic SVG views and sections from the first STEP export.
+    """Generate deterministic SVG views and sections from one STEP export.
 
-    The first implementation renders one primary object because the MVP
-    publishes a single final part. The manifest keeps object labels so a future
-    multi-part renderer can extend this without changing the agent contract.
+    The rendered source is the combined assembly export when the run has one
+    (ADR 0023), else the first per-part export; the manifest's ``label`` names
+    which. One source keeps the view set bounded regardless of part count.
 
     Returns ``(views, sections, warnings)``. An unreadable STEP export skips
     the projected views with a ``render_step_failed`` warning instead of
@@ -348,7 +395,7 @@ def _render_step_artifacts(
 
     from build123d import Plane, import_step
 
-    export = exports[0]
+    export = _primary_export(exports)
     try:
         shape = import_step(export["path"])
         if not list(shape.faces()):
@@ -407,7 +454,7 @@ def _render_raster_artifacts(run_dir: Path) -> list[dict[str, Any]]:
     if not exports:
         return []
 
-    export = exports[0]
+    export = _primary_export(exports)
     target = run_dir / "views" / "shaded_iso.png"
     _render_stl_shaded(Path(export["path"]), target)
     return [

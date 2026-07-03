@@ -257,6 +257,81 @@ def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list
     return exports, warnings
 
 
+def _export_assembly(
+    published_entries: list[dict[str, Any]], run_dir: Path
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Export the whole placed assembly as combined STEP/STL/GLB (ADR 0023).
+
+    Emitted only when a run publishes two or more real shapes — a single part
+    already *is* its own export, and synthetic dict publications carry no
+    geometry. Every real shape is included regardless of role: fixtures and
+    reference geometry are useful visual context, and physical-role filtering
+    stays where it has semantic weight (mass aggregation, BOM). Records carry
+    an additive ``assembly: true`` flag so consumers (inspector, renderer)
+    include or exclude the combined artifact deliberately.
+
+    A part itself labeled ``"assembly"`` would collide with the combined
+    filenames on disk and shadow the flag's label in every label-keyed index,
+    so the combined export is skipped with a warning in that (rare) case.
+    """
+
+    real_entries = [entry for entry in published_entries if not isinstance(entry["object"], dict)]
+    if len(real_entries) < 2:
+        return [], []
+    if any(entry["label"] == "assembly" for entry in real_entries):
+        return [], [
+            {
+                "type": "assembly_export_skipped",
+                "message": "a published part is labeled 'assembly'; skipping the combined "
+                "assembly export so the part's own files are not clobbered",
+            }
+        ]
+
+    try:
+        from build123d import Compound, Unit, export_gltf, export_step, export_stl
+    except Exception as exc:
+        return [], [
+            {
+                "type": "export_dependency_missing",
+                "message": f"build123d exporters are unavailable: {exc}",
+            }
+        ]
+
+    try:
+        # located() already baked each placement into the per-part shapes, so
+        # the compound is the assembly exactly as the checks observed it.
+        combined = Compound(children=[_placed_object(entry) for entry in real_entries])
+    except Exception as exc:
+        return [], [
+            {"type": "export_failed", "format": "assembly", "label": "assembly", "message": str(exc)}
+        ]
+
+    exports: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for extension, exporter, kwargs in [
+        ("step", export_step, {"unit": Unit.MM}),
+        ("stl", export_stl, {}),
+        ("glb", export_gltf, {"binary": True, "unit": Unit.MM}),
+    ]:
+        target = run_dir / f"assembly.{extension}"
+        try:
+            exporter(combined, target, **kwargs)
+            exports.append(
+                {
+                    "label": "assembly",
+                    "format": extension,
+                    "path": str(target),
+                    "units": "mm",
+                    "assembly": True,
+                }
+            )
+        except Exception as exc:
+            warnings.append(
+                {"type": "export_failed", "format": extension, "label": "assembly", "message": str(exc)}
+            )
+    return exports, warnings
+
+
 def _reference_face(profile: Any) -> Any:
     """Return a planar face defining ``profile``'s plane, if one is derivable.
 

@@ -79,12 +79,17 @@ def _resolve_export_path(run_dir: Path, export_path: str) -> Path:
 
 
 def _step_exports(diagnostics: dict[str, Any], run_dir: Path) -> list[dict[str, Any]]:
-    """Return STEP export records with paths usable from the current process."""
+    """Return STEP export records with paths usable from the current process.
+
+    The combined assembly export (ADR 0023) is excluded: feature detection
+    must run once per part, not a second time over the same geometry under a
+    bogus ``obj.assembly`` source object.
+    """
 
     return [
         {**export, "path": str(_resolve_export_path(run_dir, export["path"]))}
         for export in diagnostics.get("exports", [])
-        if export.get("format") == "step"
+        if export.get("format") == "step" and not export.get("assembly")
     ]
 
 
