@@ -147,3 +147,25 @@ publish("lid", lid, mate=mate(to="box", kind="revolute",
       type: interference
       tolerance: 0.001
 ```
+
+## Materials (screenshot appearance)
+
+Shaded renders (`cadx render`, `cadx shots`) color each part by its declared
+appearance — looks only, no simulation. Declare it where the part is
+published, or let BOM metadata imply it:
+
+```python
+publish("frame", frame, appearance="carbon_fiber")
+publish("bolt", bolt, appearance="black_oxide")
+publish("lens", lens, appearance="glass")          # translucent
+publish("mount", mount, appearance="#ff8800")      # any hex color
+publish_part_meta("plate", material="6061-T6 Aluminum")  # implies "aluminum"
+```
+
+Presets live in `cadx.materials.MATERIALS`: steel, stainless_steel, aluminum,
+titanium, brass, copper, gold, zinc_plated, black_oxide,
+anodized_black/red/blue, carbon_fiber (two-tone weave), glass (translucent),
+rubber, and plastic_&lt;color&gt; variants. Undeclared parts cycle a distinct
+default palette so bare assemblies still render with distinguishable parts;
+unknown names fall back to the palette with an `appearance_unknown` warning in
+the render manifest.

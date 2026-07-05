@@ -308,3 +308,22 @@
   `render` path untouched.
 - Verified on the real airframe: `top` = wing planform, `side` = fin
   profile, `front` = circular body with the cruciform/wing cross.
+- Started ADR 0027 on `claude/adr-0027-render-materials`: appearance-only
+  materials for shaded renders (user request: carbon fiber, steel, aluminum,
+  fasteners, optics — no simulation). Noted the concurrent ADR 0026 (`cadx
+  shots`) landed first and integrated with it rather than duplicating.
+  Red state confirmed: 9 new tests failed (no `cadx.materials`, all-blue
+  renders).
+- Implemented `cadx.materials` (preset table with metals, black_oxide,
+  anodized finishes, carbon_fiber two-tone, translucent glass, plastics; hex
+  literals; `DEFAULT_PALETTE` whose first entry preserves the legacy blue
+  formula; part_meta substring mapping), a per-part composite rasterizer path
+  (`_shaded_batches` + `_render_shaded` with Blinn-style specular, centroid
+  two-tone hash, alpha compositing) feeding both `render` and `shots`, with
+  `parts` appearance records and `appearance_unknown` warnings in the
+  manifest/payload. `_render_stl_shaded` stayed byte-stable as a one-batch
+  legacy wrapper; pinned ADR 0011/0023/0026 contracts unchanged.
+- Visual verify on a camera-module showcase caught navy outline striping on
+  cylinder flanks; presets gained darkened per-material `outline` colors
+  (legacy/palette/hex keep (32,54,72) for byte-stability). Full suite `149 passed` (140 + 9 new),
+  merged to `master`.

@@ -318,6 +318,9 @@ def _orthographic_projector(right, up, forward):
     def project(point):
         return (_dot(point, right), -_dot(point, up), _dot(point, forward))
 
+    # The camera's view direction, used by material specular highlights
+    # (ADR 0027). ``forward`` points from the model toward the camera.
+    project.view = forward
     return project
 
 
@@ -331,6 +334,125 @@ SHADED_CAMERAS = {
     "front": _orthographic_projector((0, 1, 0), (0, 0, 1), (-1, 0, 0)),  # nose toward viewer
     "rear": _orthographic_projector((0, -1, 0), (0, 0, 1), (1, 0, 0)),  # tail toward viewer
 }
+
+# The legacy oblique iso projects along roughly (1, 1, 1); material specular
+# highlights (ADR 0027) use this as its view direction.
+_project_iso.view = _normalize((1.0, 1.0, 1.0))
+
+# The exact pre-ADR-0027 look: legacy blue, legacy lighting weights, no
+# specular. ``_render_stl_shaded`` uses this so its output stays byte-stable.
+_LEGACY_SPEC = {"color": (66, 132, 184), "ambient": 0.35, "diffuse": 0.65, "specular": 0.0}
+
+
+def _shade_triangle(
+    spec: dict[str, Any],
+    normal: tuple[float, float, float],
+    centroid: tuple[float, float, float],
+    light: tuple[float, float, float],
+    view: tuple[float, float, float],
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Shade one facet under a material spec; returns ``(fill, outline)``.
+
+    With the legacy weights and zero specular this computes exactly the ADR
+    0011 formula, so default-material output is unchanged. ``two_tone`` picks
+    the alternate color from a deterministic centroid hash (a ~1.25 mm checker
+    that reads as a weave/speckle at facet scale); the specular term is a
+    Blinn-style highlight that pushes the diffuse color toward white.
+    """
+
+    from math import floor
+
+    color = spec["color"]
+    two_tone = spec.get("two_tone")
+    if two_tone is not None:
+        weave = int(floor(centroid[0] * 0.8) + floor(centroid[1] * 0.8) + floor(centroid[2] * 0.8)) % 2
+        if weave:
+            color = two_tone
+    intensity = float(spec.get("ambient", 0.35)) + float(spec.get("diffuse", 0.65)) * max(0.0, _dot(normal, light))
+    shaded = [component * intensity for component in color]
+    specular = float(spec.get("specular", 0.0))
+    if specular > 0.0:
+        half = _normalize(tuple(l + v for l, v in zip(light, view)))
+        highlight = max(0.0, _dot(normal, half)) ** float(spec.get("shininess", 16))
+        shaded = [component + (255.0 - component) * specular * highlight for component in shaded]
+    fill = tuple(max(0, min(255, int(component))) for component in shaded)
+    outline = tuple(spec.get("outline", (32, 54, 72)))
+    return fill, outline
+
+
+def _render_shaded(
+    batches: list[dict[str, Any]],
+    target: Path,
+    size: tuple[int, int] = (900, 650),
+    project=_project_iso,
+) -> None:
+    """Rasterize per-part triangle batches with per-material shading.
+
+    Every batch is ``{"triangles", "spec", "label"}``; all facets merge into
+    one global painter's-order sort so parts occlude each other correctly.
+    Translucent specs (``alpha`` < 255) are alpha-composited in paint order —
+    glass shows what sits behind it — and the canvas stays plain RGB whenever
+    every batch is opaque, preserving legacy byte-stability.
+    """
+
+    from PIL import Image, ImageDraw
+
+    faces: list[dict[str, Any]] = []
+    for batch in batches:
+        spec = batch["spec"]
+        for triangle in batch["triangles"]:
+            faces.append(
+                {
+                    "points": [project(vertex) for vertex in triangle],
+                    "normal": _triangle_normal(triangle),
+                    "centroid": tuple(sum(vertex[axis] for vertex in triangle) / 3.0 for axis in range(3)),
+                    "spec": spec,
+                }
+            )
+
+    translucent = any(int(batch["spec"].get("alpha", 255)) < 255 for batch in batches)
+    mode = "RGBA" if translucent else "RGB"
+    image = Image.new(mode, size, (255, 255, 255, 255) if translucent else "white")
+    if not faces:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        image.convert("RGB").save(target) if translucent else image.save(target)
+        return
+
+    all_x = [point[0] for face in faces for point in face["points"]]
+    all_y = [point[1] for face in faces for point in face["points"]]
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    margin = 48
+    scale = min(
+        (size[0] - margin * 2) / max(max_x - min_x, 1e-6),
+        (size[1] - margin * 2) / max(max_y - min_y, 1e-6),
+    )
+
+    light = _normalize((0.35, -0.45, 0.82))
+    view = getattr(project, "view", _project_iso.view)
+    draw = ImageDraw.Draw(image)
+    for face in sorted(faces, key=lambda item: sum(point[2] for point in item["points"])):
+        points_2d = [
+            (
+                margin + (point[0] - min_x) * scale,
+                margin + (point[1] - min_y) * scale,
+            )
+            for point in face["points"]
+        ]
+        fill, outline = _shade_triangle(face["spec"], face["normal"], face["centroid"], light, view)
+        alpha = int(face["spec"].get("alpha", 255))
+        if translucent and alpha < 255:
+            overlay = Image.new("RGBA", size, (0, 0, 0, 0))
+            ImageDraw.Draw(overlay).polygon(points_2d, fill=(*fill, alpha), outline=(*outline, alpha))
+            image.alpha_composite(overlay)
+            draw = ImageDraw.Draw(image)
+        elif translucent:
+            draw.polygon(points_2d, fill=(*fill, 255), outline=(*outline, 255))
+        else:
+            draw.polygon(points_2d, fill=fill, outline=outline)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    (image.convert("RGB") if translucent else image).save(target)
 
 
 def _render_stl_shaded(
@@ -348,53 +470,90 @@ def _render_stl_shaded(
     ``project`` maps a 3D point to ``(screen_x, screen_y, depth)`` and defaults
     to the legacy isometric projection, so callers that pass no projector get
     byte-identical output to before (ADR 0026). Named cameras live in
-    ``SHADED_CAMERAS``.
+    ``SHADED_CAMERAS``. Since ADR 0027 this is a one-batch wrapper over
+    ``_render_shaded`` using the exact legacy material, which keeps the output
+    byte-identical for this single-source path too.
     """
 
-    from PIL import Image, ImageDraw
-
     triangles = _read_binary_stl(stl_path)
-    image = Image.new("RGB", size, "white")
-    if not triangles:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        image.save(target)
-        return
+    _render_shaded([{"triangles": triangles, "spec": dict(_LEGACY_SPEC), "label": None}], target, size, project)
 
-    projected = [
-        {
-            "points": [project(vertex) for vertex in triangle],
-            "normal": _triangle_normal(triangle),
-        }
-        for triangle in triangles
-    ]
-    all_x = [point[0] for triangle in projected for point in triangle["points"]]
-    all_y = [point[1] for triangle in projected for point in triangle["points"]]
-    min_x, max_x = min(all_x), max(all_x)
-    min_y, max_y = min(all_y), max(all_y)
-    margin = 48
-    scale = min(
-        (size[0] - margin * 2) / max(max_x - min_x, 1e-6),
-        (size[1] - margin * 2) / max(max_y - min_y, 1e-6),
-    )
 
-    light = _normalize((0.35, -0.45, 0.82))
-    base = (66, 132, 184)
-    draw = ImageDraw.Draw(image)
-    for triangle in sorted(projected, key=lambda item: sum(point[2] for point in item["points"])):
-        points_2d = [
-            (
-                margin + (point[0] - min_x) * scale,
-                margin + (point[1] - min_y) * scale,
-            )
-            for point in triangle["points"]
-        ]
-        normal = triangle["normal"]
-        shade = 0.35 + 0.65 * max(0.0, sum(normal[index] * light[index] for index in range(3)))
-        color = tuple(max(0, min(255, int(component * shade))) for component in base)
-        draw.polygon(points_2d, fill=color, outline=(32, 54, 72))
+def _shaded_batches(run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build per-part shaded batches with resolved appearances (ADR 0027).
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    image.save(target)
+    Returns ``(batches, parts, warnings)``. Triangles come from the per-part
+    STL exports (placements are baked in, so they compose in the assembly
+    frame); the combined assembly STL has no part boundaries and is used only
+    as a fallback when no per-part exports exist. Appearance resolution per
+    part, most explicit first: ``publish(appearance=...)`` metadata, then a
+    preset implied by ``publish_part_meta(material=...)``, then the default
+    palette by part index. Unknown declared names degrade to the palette with
+    an ``appearance_unknown`` warning.
+    """
+
+    from cadx.materials import DEFAULT_PALETTE, MATERIALS, material_for_part_meta, resolve_appearance
+
+    exports = _stl_exports(run_dir)
+    if not exports:
+        return [], [], []
+    part_exports = [export for export in exports if not export.get("assembly")]
+    if not part_exports:
+        part_exports = [_primary_export(exports)]
+
+    metadata_by_label: dict[Any, dict[str, Any]] = {}
+    spatial_order: dict[Any, int] = {}
+    spatial_path = run_dir / "spatial.json"
+    if spatial_path.exists():
+        spatial = read_json(spatial_path)
+        for index, obj in enumerate(spatial.get("objects", [])):
+            metadata_by_label[obj.get("label")] = obj.get("metadata") or {}
+            spatial_order[obj.get("label")] = index
+    material_by_label: dict[Any, Any] = {}
+    diagnostics_path = run_dir / "diagnostics.json"
+    if diagnostics_path.exists():
+        diagnostics = read_json(diagnostics_path)
+        for record in diagnostics.get("part_meta", []):
+            material_by_label[record.get("label")] = record.get("material")
+
+    # Stable palette assignment: follow the published object order.
+    part_exports = sorted(part_exports, key=lambda export: spatial_order.get(export.get("label"), 1_000_000))
+
+    batches: list[dict[str, Any]] = []
+    parts: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    for index, export in enumerate(part_exports):
+        label = export.get("label")
+        name: str | None = None
+        spec: dict[str, Any] | None = None
+        declared = metadata_by_label.get(label, {}).get("appearance")
+        if declared is not None:
+            resolved = resolve_appearance(declared)
+            if resolved is None:
+                warnings.append(
+                    {
+                        "type": "appearance_unknown",
+                        "label": label,
+                        "message": f"unknown appearance {declared!r} on {label!r}; using the default palette",
+                    }
+                )
+            else:
+                name, spec = resolved
+        if spec is None:
+            preset = material_for_part_meta(material_by_label.get(label))
+            if preset is not None:
+                name, spec = preset, MATERIALS[preset]
+        if spec is None:
+            palette = DEFAULT_PALETTE[index % len(DEFAULT_PALETTE)]
+            name, spec = palette["name"], palette
+        try:
+            triangles = _read_binary_stl(Path(export["path"]))
+        except Exception as exc:
+            warnings.append({"type": "raster_part_failed", "label": label, "message": str(exc)})
+            continue
+        batches.append({"triangles": triangles, "spec": spec, "label": label})
+        parts.append({"label": label, "appearance": name})
+    return batches, parts, warnings
 
 
 def _nonempty(shape: Any) -> bool:
@@ -553,16 +712,23 @@ def _render_step_artifacts(
     return rendered, sections, []
 
 
-def _render_raster_artifacts(run_dir: Path) -> list[dict[str, Any]]:
-    """Render shaded raster artifacts from STL exports."""
+def _render_raster_artifacts(run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Render shaded raster artifacts from STL exports.
+
+    Pixels composite from the per-part STLs so each part shades with its
+    resolved appearance (ADR 0027); ``source``/``label`` keep naming the
+    primary STL — still the canonical single-file statement of what was drawn
+    — and the record's ``parts`` list names each part's appearance.
+    """
 
     exports = _stl_exports(run_dir)
     if not exports:
-        return []
+        return [], []
 
     export = _primary_export(exports)
+    batches, parts, warnings = _shaded_batches(run_dir)
     target = run_dir / "views" / "shaded_iso.png"
-    _render_stl_shaded(Path(export["path"]), target)
+    _render_shaded(batches, target)
     return [
         {
             "name": "shaded_iso",
@@ -571,8 +737,9 @@ def _render_raster_artifacts(run_dir: Path) -> list[dict[str, Any]]:
             "source_format": "stl",
             "label": export.get("label"),
             "camera": "isometric",
+            "parts": parts,
         }
-    ]
+    ], warnings
 
 
 def render_run(run_dir: Path) -> dict[str, Any]:
@@ -586,7 +753,8 @@ def render_run(run_dir: Path) -> dict[str, Any]:
 
     spatial = read_json(spatial_path)
     views, sections, warnings = _render_step_artifacts(run_dir)
-    rasters = _render_raster_artifacts(run_dir)
+    rasters, raster_warnings = _render_raster_artifacts(run_dir)
+    warnings = warnings + raster_warnings
     contact_sheet = run_dir / "views" / "contact.png"
     contact_panels = _draw_with_pillow(contact_sheet, spatial, rasters=rasters)
     manifest = {
@@ -637,16 +805,18 @@ def render_shots(
 
     exports = _stl_exports(run_dir)
     if not exports:
-        return {"status": "ok", "source": None, "label": None, "shots": []}
+        return {"status": "ok", "source": None, "label": None, "shots": [], "parts": [], "warnings": []}
 
     export = _primary_export(exports)
-    stl_path = Path(export["path"])
     target_dir = out_dir if out_dir is not None else run_dir / "views"
 
+    # Per-part material batches (ADR 0027): every camera shades each part
+    # with its resolved appearance, exactly like `render`'s shaded raster.
+    batches, parts, warnings = _shaded_batches(run_dir)
     shots: list[dict[str, Any]] = []
     for name in names:
         target = target_dir / f"shaded_{name}.png"
-        _render_stl_shaded(stl_path, target, project=SHADED_CAMERAS[name])
+        _render_shaded(batches, target, project=SHADED_CAMERAS[name])
         shots.append({"name": name, "camera": name, "path": str(target)})
 
     return {
@@ -654,4 +824,6 @@ def render_shots(
         "source": export["path"],
         "label": export.get("label"),
         "shots": shots,
+        "parts": parts,
+        "warnings": warnings,
     }
