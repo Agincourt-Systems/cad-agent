@@ -327,3 +327,6 @@
   cylinder flanks; presets gained darkened per-material `outline` colors
   (legacy/palette/hex keep (32,54,72) for byte-stability). Full suite `149 passed` (140 + 9 new),
   merged to `master`.
+- Added the ADR 0027 materials showcase render (aluminum/carbon/steel/glass/
+  black-oxide/brass camera module) to the README as a second hero image
+  alongside the mated-assembly screenshot.

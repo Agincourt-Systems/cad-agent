@@ -11,6 +11,8 @@ stable.
 
 ![Shaded render of a four-part mated assembly: base plate, tower, revolute-posed swing arm, and pivot boss](docs/images/cad-output.png)
 
+![Materials showcase: aluminum plate, carbon-fiber frame, steel barrel with translucent glass lens, black-oxide bolts, and brass knob](docs/images/materials-output.png)
+
 ## Quick Start
 
 ```bash
