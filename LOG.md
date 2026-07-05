@@ -344,3 +344,19 @@
   documented the off-axis soft-light recipe since pure front light maximizes
   specular on camera-facing faces. Full suite `154 passed` (149 + 5 new),
   merged to `master`.
+
+
+## 2026-07-05 — ADR 0029: cadx publish (apexmesh export)
+
+apexmesh (../apexmesh) is now the pipeline hub (its design-v2.md); `cadx
+publish <run_dir> --project <name>` exports a run dir: a `cadx` run record
+(external_ref `<project-dir>:<run-number>`, status mirroring diagnostics
+errors, check counts as metrics), source_snapshot.py + params.resolved.yaml
+as lineage inputs, every recorded STEP/STL/GLB/DXF export plus checks/
+diagnostics/spatial/bom/report/views as outputs, and bom.json rows mapped
+into apexmesh parts (declared part_number wins) with a revision named after
+the run number under a `<PROJECT>-ASSY` assembly. Pure plan layer + fake
+client execution tests (12); apexmesh-client optional lazy import;
+republish refuses without --force; 409 revision conflicts reuse the
+existing revision. Suite 154 → 166 green. Live end-to-end validation rides
+apexmesh ADR-0018 (chupacabra backfill).

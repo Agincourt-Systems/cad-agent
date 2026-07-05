@@ -85,6 +85,19 @@ def build_parser() -> argparse.ArgumentParser:
     bom_parser = subcommands.add_parser("bom", help="Aggregate part metadata into bom.csv/bom.json")
     bom_parser.add_argument("run_dir", type=Path)
 
+    publish_parser = subcommands.add_parser(
+        "publish", help="Publish a run directory to apexmesh (ADR 0029)"
+    )
+    publish_parser.add_argument("run_dir", type=Path)
+    publish_parser.add_argument("--project", help="apexmesh project name")
+    publish_parser.add_argument("--project-id", help="apexmesh project id")
+    publish_parser.add_argument(
+        "--external-ref", help="override the run identity (default: <project-dir>:<run-number>)"
+    )
+    publish_parser.add_argument(
+        "--force", action="store_true", help="publish even if this run already succeeded on the hub"
+    )
+
     loop_parser = subcommands.add_parser("loop", help="Run/render/evaluate until pass or iteration limit")
     loop_parser.add_argument("source", type=Path)
     loop_parser.add_argument("--params", type=Path, default=Path("params.yaml"))
@@ -138,6 +151,32 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "bom":
         _print(build_bom(args.run_dir))
+        return 0
+    if args.command == "publish":
+        # apexmesh-client is optional; only this subcommand needs it.
+        try:
+            from apexmesh_client import ApexMeshClient, ApiError
+        except ImportError:
+            _print({
+                "status": "error",
+                "message": "apexmesh-client is not installed "
+                "(pip install -e ../apexmesh/clients/python)",
+            })
+            return 2
+        from cadx.publish import AlreadyPublishedError, build_plan, execute_plan
+
+        if (args.project is None) == (args.project_id is None):
+            _print({"status": "error", "message": "provide exactly one of --project / --project-id"})
+            return 2
+        try:
+            client = ApexMeshClient()
+            project_id = args.project_id or client.find_project(args.project)["id"]
+            plan = build_plan(args.run_dir, external_ref=args.external_ref)
+            result = execute_plan(client, project_id, plan, force=args.force)
+        except (AlreadyPublishedError, ApiError, KeyError, FileNotFoundError, ValueError) as exc:
+            _print({"status": "error", "message": str(exc)})
+            return 1
+        _print({"status": "ok", **result})
         return 0
     if args.command == "loop":
         payload = loop_until_done(
