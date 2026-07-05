@@ -60,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
         "Valid: iso,top,side,front,rear",
     )
     shots_parser.add_argument("--out", type=Path, default=None, help="output directory")
+    shots_parser.add_argument(
+        "--light",
+        type=str,
+        default=None,
+        help="light direction: 'camera' (front-light each view) or 'X,Y,Z' "
+        "(default: the fixed legacy light)",
+    )
 
     evaluate_parser = subcommands.add_parser("evaluate", help="Evaluate a run against requirements")
     evaluate_parser.add_argument("run_dir", type=Path)
@@ -112,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "shots":
         views = [name.strip() for name in args.views.split(",") if name.strip()] if args.views else None
         try:
-            payload = render_shots(args.run_dir, views=views, out_dir=args.out)
+            payload = render_shots(args.run_dir, views=views, out_dir=args.out, light=args.light)
         except ValueError as exc:
             _print({"status": "error", "message": str(exc)})
             return 2

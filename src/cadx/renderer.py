@@ -339,6 +339,42 @@ SHADED_CAMERAS = {
 # highlights (ADR 0027) use this as its view direction.
 _project_iso.view = _normalize((1.0, 1.0, 1.0))
 
+# The fixed light direction chosen in ADR 0011 (up-and-behind-left, tuned for
+# the iso view). `render` always uses it; `shots --light` can override it
+# (ADR 0028). Points from the model toward the light.
+DEFAULT_LIGHT = (0.35, -0.45, 0.82)
+
+
+def _resolve_shot_light(spec: Any, project: Any) -> tuple[float, float, float]:
+    """Resolve a shot light spec to a normalized direction (ADR 0028).
+
+    ``None`` keeps the legacy default; ``"camera"`` follows the given
+    projector's view vector (front-lighting that camera); ``"X,Y,Z"`` (or a
+    3-sequence) is an explicit direction, normalized. Anything else raises a
+    ``ValueError`` naming the bad spec, matching the unknown-view fail-fast.
+    """
+
+    if spec is None:
+        return _normalize(DEFAULT_LIGHT)
+    if isinstance(spec, str):
+        if spec == "camera":
+            return getattr(project, "view", _project_iso.view)
+        parts = [part.strip() for part in spec.split(",")]
+        if len(parts) != 3:
+            raise ValueError(f"light must be 'camera' or 'X,Y,Z', got {spec!r}")
+        try:
+            vector = tuple(float(part) for part in parts)
+        except ValueError as exc:
+            raise ValueError(f"light must be 'camera' or 'X,Y,Z', got {spec!r}") from exc
+    elif isinstance(spec, (list, tuple)) and len(spec) == 3:
+        vector = tuple(float(component) for component in spec)
+    else:
+        raise ValueError(f"light must be 'camera' or 'X,Y,Z', got {spec!r}")
+    normalized = _normalize(vector)
+    if normalized == (0.0, 0.0, 0.0):
+        raise ValueError(f"light vector must be non-zero, got {spec!r}")
+    return normalized
+
 # The exact pre-ADR-0027 look: legacy blue, legacy lighting weights, no
 # specular. ``_render_stl_shaded`` uses this so its output stays byte-stable.
 _LEGACY_SPEC = {"color": (66, 132, 184), "ambient": 0.35, "diffuse": 0.65, "specular": 0.0}
@@ -385,6 +421,7 @@ def _render_shaded(
     target: Path,
     size: tuple[int, int] = (900, 650),
     project=_project_iso,
+    light: tuple[float, float, float] | None = None,
 ) -> None:
     """Rasterize per-part triangle batches with per-material shading.
 
@@ -428,7 +465,7 @@ def _render_shaded(
         (size[1] - margin * 2) / max(max_y - min_y, 1e-6),
     )
 
-    light = _normalize((0.35, -0.45, 0.82))
+    light = _normalize(DEFAULT_LIGHT) if light is None else light
     view = getattr(project, "view", _project_iso.view)
     draw = ImageDraw.Draw(image)
     for face in sorted(faces, key=lambda item: sum(point[2] for point in item["points"])):
@@ -787,6 +824,7 @@ def render_shots(
     run_dir: Path,
     views: list[str] | None = None,
     out_dir: Path | None = None,
+    light: Any = None,
 ) -> dict[str, Any]:
     """Render shaded PNG screenshots of a run from several named cameras.
 
@@ -802,10 +840,21 @@ def render_shots(
     if unknown:
         valid = ", ".join(sorted(SHADED_CAMERAS))
         raise ValueError(f"unknown shot view(s) {unknown}: choose from {valid}")
+    # Resolve the light per view up front (ADR 0028): "camera" follows each
+    # view's own camera, and a bad spec fails before any file is written.
+    lights = {name: _resolve_shot_light(light, SHADED_CAMERAS[name]) for name in names}
 
     exports = _stl_exports(run_dir)
     if not exports:
-        return {"status": "ok", "source": None, "label": None, "shots": [], "parts": [], "warnings": []}
+        return {
+            "status": "ok",
+            "source": None,
+            "label": None,
+            "shots": [],
+            "parts": [],
+            "warnings": [],
+            "light": light,
+        }
 
     export = _primary_export(exports)
     target_dir = out_dir if out_dir is not None else run_dir / "views"
@@ -816,8 +865,8 @@ def render_shots(
     shots: list[dict[str, Any]] = []
     for name in names:
         target = target_dir / f"shaded_{name}.png"
-        _render_shaded(batches, target, project=SHADED_CAMERAS[name])
-        shots.append({"name": name, "camera": name, "path": str(target)})
+        _render_shaded(batches, target, project=SHADED_CAMERAS[name], light=lights[name])
+        shots.append({"name": name, "camera": name, "path": str(target), "light": list(lights[name])})
 
     return {
         "status": "ok",
@@ -826,4 +875,5 @@ def render_shots(
         "shots": shots,
         "parts": parts,
         "warnings": warnings,
+        "light": light,
     }

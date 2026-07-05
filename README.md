@@ -171,3 +171,12 @@ rubber, and plastic_&lt;color&gt; variants. Undeclared parts cycle a distinct
 default palette so bare assemblies still render with distinguishable parts;
 unknown names fall back to the palette with an `appearance_unknown` warning in
 the render manifest.
+
+Screenshot lighting is steerable per `cadx shots` invocation:
+`--light camera` front-lights each view with its own camera (the one-flag fix
+for dark side/rear views), and `--light X,Y,Z` sets an explicit direction —
+slightly off the camera axis (e.g. `0.3,1,0.5` for the side view) gives a
+softer look than pure front light, which maximizes specular on camera-facing
+faces. The resolved light vector is recorded on every shot for
+reproducibility; `cadx render` keeps the fixed legacy light so diagnostic
+contact sheets stay comparable across runs.

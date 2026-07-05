@@ -330,3 +330,17 @@
 - Added the ADR 0027 materials showcase render (aluminum/carbon/steel/glass/
   black-oxide/brass camera module) to the README as a second hero image
   alongside the mated-assembly screenshot.
+- Started ADR 0028 on `claude/adr-0028-shot-lighting`: configurable light
+  direction for `cadx shots` (the ADR 0027 side views were ambient-dark under
+  the fixed ADR 0011 light). Red state: 4 of 5 new tests failed (the
+  invalid-spec test was green-before via argparse's own rejection, noted in
+  the AAR).
+- Implemented `DEFAULT_LIGHT`, a `light` parameter through `_render_shaded`,
+  `_resolve_shot_light` (`"camera"` = per-view front light, `"X,Y,Z"`
+  explicit, fail-fast on garbage), `cadx shots --light`, and per-shot
+  recorded light vectors in the payload. Default path byte-stable (pinned);
+  `render`/contact sheet deliberately unchanged. Visual verify on the
+  materials showcase: default side view murky, `--light camera` legible;
+  documented the off-axis soft-light recipe since pure front light maximizes
+  specular on camera-facing faces. Full suite `154 passed` (149 + 5 new),
+  merged to `master`.
