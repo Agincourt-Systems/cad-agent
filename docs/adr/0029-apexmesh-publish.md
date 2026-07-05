@@ -89,5 +89,13 @@ publish, republish guard + --force, 409 revision reuse). Full suite 154 →
 166 green (5m31s — the publish tests add negligible time). The live-publish
 criterion (run 0010 of ../chupacabra-configuration into apexmesh with
 lineage to the trade study) lands with apexmesh ADR-0018; update this AAR
-then. Watch items from failure criteria (per-run revision bloat, upload
+then.
+
+*2026-07-05 (later):* Live criterion met — apexmesh ADR-0018's backfill
+published runs 0003–0010 (~35 artifacts + 7 BOM parts each; 0001/0002 predate
+diagnostics.json and were skipped). Lineage from run 0010's assembly.step
+resolves through the configuration node to the trade study (169 entities).
+Follow-on noted: a `cadx publish --input-node <id>` flag would let a run
+declare its source configuration at publish time instead of relying on a
+post-hoc attachment. Watch items from failure criteria (per-run revision bloat, upload
 volume) — assess after the backfill publishes real volumes.
