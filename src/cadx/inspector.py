@@ -142,6 +142,77 @@ def _plane_feature(face: Any, label: str, index: int) -> dict[str, Any]:
     }
 
 
+def _axes_parallel(axis_a: list[float], axis_b: list[float]) -> bool:
+    """True when two direction vectors point along the same line (either sense)."""
+
+    dot = sum(a * b for a, b in zip(axis_a, axis_b))
+    norm_a = sqrt(sum(a * a for a in axis_a))
+    norm_b = sqrt(sum(b * b for b in axis_b))
+    if norm_a == 0 or norm_b == 0:
+        return False
+    return abs(dot) >= norm_a * norm_b * (1 - 1e-4)
+
+
+def _same_axis_line(cyl_a: dict[str, Any], cyl_b: dict[str, Any]) -> bool:
+    """True when two partial cylinders share one axis of rotation LINE.
+
+    Not merely a parallel direction: the two axis positions must also lie on the
+    same line, i.e. the vector between them is parallel to the (shared) direction
+    (its perpendicular component is ~0). This is the geometric signature of the
+    inner and outer faces of one bent ribbon, which are concentric about a common
+    bend centre — a real obround slot's two ends sit on parallel but DISPLACED
+    axes, so they never share a line.
+    """
+
+    if not _axes_parallel(cyl_a["axis"], cyl_b["axis"]):
+        return False
+    axis = cyl_a["axis"]
+    norm = sqrt(sum(component * component for component in axis))
+    if norm == 0:
+        return False
+    unit = [component / norm for component in axis]
+    delta = [pa - pb for pa, pb in zip(cyl_a["axis_pos"], cyl_b["axis_pos"])]
+    along = sum(d * u for d, u in zip(delta, unit))
+    perpendicular_squared = sum(d * d for d in delta) - along * along
+    return sqrt(max(perpendicular_squared, 0.0)) <= 1e-3
+
+
+def _bend_arc_flags(partial_cylinders: list[dict[str, Any]], bend_radii: list[float]) -> list[bool]:
+    """Mark partial cylinders that are bend-region arcs, not slot ends (D-023).
+
+    A folded bend region (ADR 0034) is a swept annular sector whose inner face
+    (radius ``rho - t/2``) and outer face (``rho + t/2``) are two partial cylinders
+    that are **concentric** (share one axis line, :func:`_same_axis_line`) but have
+    **different radii**. A real obround slot's two ends have EQUAL radii on
+    displaced axes, so they never form such a pair. A partial cylinder is therefore
+    a bend arc when some other partial cylinder is concentric with it at a
+    different radius.
+
+    The pair is additionally corroborated against the part's published bend table:
+    with the measured wall thickness ``t = |r_outer - r_inner|`` (the arc pair spans
+    exactly one wall), the inner radius must fall within ``0.5*t`` of some bend's
+    ``inside_radius`` (because ``r_inner = inside_radius + (k - 0.5)*t`` for a
+    k-factor in ``[0, 1]``). This ties suppression to the bend features and derives
+    thickness from the geometry itself, so no external thickness is needed here.
+    """
+
+    flags = [False] * len(partial_cylinders)
+    for i, cyl in enumerate(partial_cylinders):
+        for j, other in enumerate(partial_cylinders):
+            if i == j:
+                continue
+            radius_gap = abs(cyl["radius"] - other["radius"])
+            if radius_gap <= 1e-3:
+                continue  # Equal radius -> a slot-end partner, not inner/outer.
+            if not _same_axis_line(cyl, other):
+                continue  # Not concentric -> not one bent ribbon's two faces.
+            inner_radius = min(cyl["radius"], other["radius"])
+            if any(abs(bend_radius - inner_radius) <= 0.5 * radius_gap + 1e-3 for bend_radius in bend_radii):
+                flags[i] = True
+                break
+    return flags
+
+
 def _slot_features(partial_cylinders: list[dict[str, Any]], label: str) -> list[dict[str, Any]]:
     """Detect simple obround slots from paired partial cylindrical end faces."""
 
@@ -191,8 +262,16 @@ def _slot_features(partial_cylinders: list[dict[str, Any]], label: str) -> list[
     return slots
 
 
-def _detected_topology_features(shape: Any, label: str) -> list[dict[str, Any]]:
-    """Detect planar datums, cylindrical holes, bosses, and simple slots."""
+def _detected_topology_features(
+    shape: Any, label: str, bend_radii: list[float] | None = None
+) -> list[dict[str, Any]]:
+    """Detect planar datums, cylindrical holes, bosses, and simple slots.
+
+    ``bend_radii`` is the list of published bend ``inside_radius`` values for this
+    part (empty/None for a non-sheet-metal part). When present, partial-cylinder
+    faces that are folded bend arcs are excluded from obround-slot detection so the
+    bend regions do not masquerade as phantom slots (D-023, ADR 0044).
+    """
 
     object_bbox = _bbox_dict(shape.bounding_box())
     detected: list[dict[str, Any]] = []
@@ -234,13 +313,23 @@ def _detected_topology_features(shape: Any, label: str) -> list[dict[str, Any]]:
                 {
                     "center": center,
                     "axis": axis,
+                    # Position of a point on the axis of rotation LINE, used to tell
+                    # concentric bend-arc faces (same line) from displaced slot ends.
+                    "axis_pos": _vector_from(face.axis_of_rotation.position),
                     "axis_index": axis_index,
                     "radius": radius,
                     "through": face_bbox["size"][axis_index] > 1e-5,
                 }
             )
 
-    detected.extend(_slot_features(partial_cylinders, label))
+    # On a sheet-metal part, drop the bend-region arcs before slot pairing so the
+    # folded bends do not detect as phantom obround slots (D-023). A flat part has
+    # no bend features (empty ``bend_radii``), so every partial cylinder survives.
+    slot_candidates = partial_cylinders
+    if bend_radii:
+        arc_flags = _bend_arc_flags(partial_cylinders, bend_radii)
+        slot_candidates = [cyl for cyl, is_arc in zip(partial_cylinders, arc_flags) if not is_arc]
+    detected.extend(_slot_features(slot_candidates, label))
     id_counters: dict[str, int] = {}
     for feature in detected:
         id_counters[feature["kind"]] = id_counters.get(feature["kind"], 0) + 1
@@ -266,6 +355,21 @@ def _auto_detect_features(
     except Exception:
         return [], []
 
+    # Map each part label to its published bend inside-radii (ADR 0033 emits a
+    # kind="bend" feature per bend). A part with bends is a sheet-metal part whose
+    # folded bend arcs must be kept out of obround-slot detection (D-023).
+    bend_radii_by_label: dict[str, list[float]] = {}
+    for feature in diagnostics.get("features", []):
+        if feature.get("kind") != "bend":
+            continue
+        source = feature.get("source_object")
+        if not isinstance(source, str) or not source.startswith("obj."):
+            continue
+        radius = feature.get("inside_radius", feature.get("radius"))
+        if radius is None:
+            continue
+        bend_radii_by_label.setdefault(source.split(".", 1)[1], []).append(float(radius))
+
     detected: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     for export in _step_exports(diagnostics, run_dir):
@@ -273,7 +377,10 @@ def _auto_detect_features(
             shape = import_step(export["path"])
             if not list(shape.faces()):
                 raise ValueError("STEP import produced no geometry")
-            detected.extend(_detected_topology_features(shape, export.get("label", "object")))
+            label = export.get("label", "object")
+            detected.extend(
+                _detected_topology_features(shape, label, bend_radii_by_label.get(label))
+            )
         except Exception as exc:
             warnings.append(
                 {

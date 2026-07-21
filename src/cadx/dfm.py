@@ -165,6 +165,32 @@ def _edge_clearance(feature: dict[str, Any], obj: dict[str, Any]) -> float | Non
     return min(clearances) if clearances else None
 
 
+def _flat_edge_clearance(
+    feature: dict[str, Any], blank_length: float, blank_width: float
+) -> float | None:
+    """In-plane gap from a feature's edge to the FLAT-pattern blank outline.
+
+    Used when a sheet-metal manufacturability check declares ``frame: flat`` (ADR
+    0044): the folded object's bounding box does not describe the flat blank, so a
+    hole authored in flat-pattern coordinates (to be seen by ``hole_to_bend``) must
+    be edge-checked against the developed blank rectangle instead. The blank runs
+    ``x in [0, blank_length]`` and ``y in [-blank_width/2, +blank_width/2]``, the
+    same frame ``bend_chain`` lays the flat pattern and bend lines in; the thickness
+    axis is z. The feature's half-extent along each in-plane axis is subtracted, so
+    a slot is measured by its length along x and its width across y.
+    """
+
+    center = feature.get("center")
+    if not isinstance(center, (list, tuple)) or len(center) < 2:
+        return None
+    x, y = float(center[0]), float(center[1])
+    half_width = blank_width / 2.0
+    return min(
+        min(x - 0.0, blank_length - x) - _half_extent_along(feature, 0),
+        min(y + half_width, half_width - y) - _half_extent_along(feature, 1),
+    )
+
+
 def _pair_gap(feature_a: dict[str, Any], feature_b: dict[str, Any]) -> float | None:
     """Edge-to-edge gap (the web) between two features' centers."""
 
@@ -210,16 +236,35 @@ def _rule_min_size(rule, features, index, check, kind, prop):
 
 
 def _rule_hole_to_edge(rule, features, index, check):
-    """A hole/slot closer to an edge than the limit."""
+    """A hole/slot closer to an edge than the limit.
+
+    Default frame: the owning object's bounding box (the folded solid for a
+    sheet-metal part). When the check declares ``frame: flat`` with the developed
+    blank extent (``blank_length``/``blank_width``), edge distance is measured
+    against the flat-pattern blank instead (ADR 0044), so this rule is coherent
+    with ``hole_to_bend`` — which already works in the flat frame — on a bent part.
+    Non-``flat`` checks are byte-identical to the pre-ADR-0044 behaviour.
+    """
+
+    blank_length = check.get("blank_length")
+    blank_width = check.get("blank_width")
+    flat_frame = (
+        check.get("frame") == "flat" and blank_length is not None and blank_width is not None
+    )
 
     violations = []
     for feature in features:
         if feature.get("kind") not in _EDGE_KINDS:
             continue
         obj = _owning_object(index, feature)
-        if obj is None:
-            continue
-        clearance = _edge_clearance(feature, obj)
+        if flat_frame:
+            # Flat-frame clearance needs no folded bbox; thickness still resolves
+            # from the check (explicit) or the owning object when present.
+            clearance = _flat_edge_clearance(feature, float(blank_length), float(blank_width))
+        else:
+            if obj is None:
+                continue
+            clearance = _edge_clearance(feature, obj)
         limit = _limit(rule, _resolve_thickness(check, obj))
         if clearance is None or limit is None:
             continue
