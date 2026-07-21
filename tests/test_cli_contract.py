@@ -25,6 +25,40 @@ def parse_stdout_json(result: subprocess.CompletedProcess[str]) -> dict:
     return json.loads(result.stdout)
 
 
+def test_inspect_missing_run_dir_emits_json_error(tmp_path):
+    """D-010: a missing run dir yields a JSON error object, not a traceback.
+
+    The CLI contract is one JSON object on stdout per subcommand. Before the
+    top-level handler (ADR 0031), inspect raised FileNotFoundError with empty
+    stdout, which a machine caller cannot parse.
+    """
+
+    result = run_cadx(tmp_path, "inspect", "/nonexistent/xyz")
+
+    # Nonzero exit signals failure to a shell/agent caller.
+    assert result.returncode != 0
+    # stdout must still be a single parseable JSON object.
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert isinstance(payload["message"], str) and payload["message"]
+    # The traceback stays available for humans on stderr.
+    assert result.stderr.strip()
+
+
+def test_evaluate_missing_run_dir_emits_json_error(tmp_path):
+    """D-010: evaluate on a missing run dir also emits a JSON error object."""
+
+    result = run_cadx(
+        tmp_path, "evaluate", "/nonexistent/xyz", "--requirements", "/nonexistent/req.yaml"
+    )
+
+    assert result.returncode != 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "error"
+    assert isinstance(payload["message"], str) and payload["message"]
+    assert result.stderr.strip()
+
+
 def test_init_creates_agent_editable_project_files(tmp_path):
     result = run_cadx(tmp_path, "init")
     payload = parse_stdout_json(result)

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -111,10 +113,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Dispatch the requested command and return a process exit code."""
+def _dispatch(args: argparse.Namespace) -> int:
+    """Run one parsed subcommand and return its process exit code.
 
-    args = build_parser().parse_args(argv)
+    Split out from ``main`` so the top-level exception handler there can wrap
+    the whole dispatch in a single try/except (deficiency D-010). Each branch
+    is unchanged: subcommands that already emit their own ``{"status": ...}``
+    JSON and choose their own exit code keep doing so; the wrapper only catches
+    what would otherwise escape as a raw traceback.
+    """
 
     if args.command == "init":
         _print(init_project(Path.cwd()))
@@ -193,6 +200,33 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if payload["status"] == "pass" else 1
 
     raise AssertionError(f"unhandled command {args.command!r}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Dispatch the requested command and return a process exit code.
+
+    The CLI's contract is one JSON object on stdout per subcommand so machine
+    callers never scrape human-oriented logs (deficiency D-010). Any exception
+    that escapes a subcommand — most commonly a missing run directory raising
+    ``FileNotFoundError`` inside a reader — is therefore caught here and turned
+    into a JSON error object on stdout, matching the ``{"status": "error",
+    "message": ...}`` shape the ``shots`` and ``publish`` branches already use.
+    The full traceback is still written to stderr so interactive debugging
+    keeps the stack, and we exit nonzero (1) so shells and agents see failure.
+
+    ``parse_args`` runs *outside* the try/except on purpose: argparse reports
+    usage errors (unknown command, missing argument) by exiting 2 with its own
+    message, a separate and already-structured contract we must not swallow.
+    """
+
+    args = build_parser().parse_args(argv)
+    try:
+        return _dispatch(args)
+    except Exception as exc:  # noqa: BLE001 - deliberate top-level JSON contract
+        # Preserve the stack for humans; machine callers read stdout only.
+        traceback.print_exc(file=sys.stderr)
+        _print({"status": "error", "message": str(exc)})
+        return 1
 
 
 if __name__ == "__main__":

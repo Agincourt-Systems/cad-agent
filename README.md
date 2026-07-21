@@ -28,6 +28,19 @@ cadx evaluate artifacts/runs/0001 --requirements requirements.yaml
 cadx loop design.py --params params.yaml --requirements requirements.yaml --agent-command "<agent command>"
 ```
 
+`inspect` is optional before `evaluate`: `run` already writes `spatial.json`
+with the detected features, and `evaluate` reads it directly. Run `inspect`
+when you want to (re)write and read `spatial.json` yourself — for direct
+viewing or before `compare`, which consumes the inspected form.
+
+`--artifact-root` names the directory that *holds* the numbered run
+directories; each run is written directly under it as a zero-padded number.
+`--artifact-root out` therefore produces `out/0001/`, `out/0002/`, … (not
+`out/runs/NNNN/`). The default root is `artifacts/runs`, so the default run
+directory is `artifacts/runs/0001`. In all cases the `artifact_dir` field in
+the `run` JSON is the authoritative path — read it rather than reconstructing
+the layout.
+
 `cadx shots` renders shaded PNG screenshots of the run's primary STL (the
 combined `assembly.stl` when a run has ≥2 parts, else the single part) from
 several named cameras — `iso`, `top`, `side`, `front`, `rear` — writing
@@ -52,6 +65,19 @@ Each successful run creates:
 - `views/contact.png` after rendering
 - `views/shaded_iso.png` after rendering
 - `artifacts/loop.json` after loop orchestration
+
+The CAD export set varies with the run's part count and geometry, so predict
+it from the run rather than assuming a fixed list:
+
+- A **combined `assembly.step`/`.stl`/`.glb`** is emitted only when a run has
+  **≥2 real parts**; a single-part run exports just that one part.
+- A **lone constant-thickness box auto-flattens to a DXF** flat pattern even
+  when it was not published as a sheet-metal part (this is the ADR 0013
+  flat-pattern path recognizing a plate-like solid). Multi-part and
+  non-plate runs do not.
+
+`diagnostics.json` lists every export the run actually wrote; treat it as the
+authoritative artifact index.
 
 The harness is designed so text-only agents can reason from JSON and
 multimodal agents can inspect the rendered contact sheet and shaded CAD image.
