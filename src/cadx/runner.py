@@ -129,6 +129,22 @@ def _rotate_inertia_to_body(tensor: list[list[float]], rotation: list[list[float
     return _matmul(_matmul(transposed, tensor), rotation)
 
 
+def _apply_inverse_rotation(rotation: list[list[float]] | None, vector: list[float]) -> list[float]:
+    """Rotate a world-frame direction into the local frame: ``Rᵀ · v``.
+
+    ``rotation`` is a body→world matrix (columns are the local axes in world);
+    its transpose maps world→body, so ``Rᵀ · v`` expresses the world direction
+    ``v`` in the local frame. Translation is intentionally never applied — a
+    direction/axis has no position (ADR 0048's rotation-only rule). ``None``
+    (identity or translation-only placement) returns the vector unchanged.
+    """
+
+    if rotation is None:
+        return [float(component) for component in vector]
+    transposed = [[rotation[j][i] for j in range(3)] for i in range(3)]  # Rᵀ
+    return [sum(transposed[i][k] * vector[k] for k in range(3)) for i in range(3)]
+
+
 def _mass_properties(obj: Any, placement: Any = None) -> dict[str, Any]:
     """Compute JSON-safe mass properties for a real build123d solid.
 
@@ -406,8 +422,17 @@ def _mate_frame_export(entry: dict[str, Any], parent: dict[str, Any]) -> dict[st
             for parent_value, target_value, anchor_value in zip(parent_position, target_position, anchor_position)
         ]
         export["origin"] = {"position": origin_position, "orientation": [0.0, 0.0, 0.0]}
+        # ADR 0048 (D-018): parent-relative origin. The parent placement is a
+        # pure translation here, so ``parent⁻¹ · origin_world`` is just
+        # ``origin_world − parent_position`` (which equals ``target − anchor``).
+        origin_in_parent = [
+            origin_value - parent_value for origin_value, parent_value in zip(origin_position, parent_position)
+        ]
+        export["origin_in_parent"] = {"position": origin_in_parent, "orientation": [0.0, 0.0, 0.0]}
         if kind in _KINEMATIC_KINDS:
             export["axis"] = [0.0, 0.0, 1.0]
+            # No parent rotation to remove -> parent-relative axis == world axis.
+            export["axis_in_parent"] = [0.0, 0.0, 1.0]
         return export
 
     parent_placement = parent.get("placement")
@@ -419,8 +444,24 @@ def _mate_frame_export(entry: dict[str, Any], parent: dict[str, Any]) -> dict[st
     # travel 0), verified against its composition.
     origin_location = world_target * _location_from(anchor).inverse()
     export["origin"] = _placement_record(origin_location)
+    # ADR 0048 (D-018): parent-relative zero-pose origin for URDF ``<origin>``.
+    # ``parent_placement⁻¹ · origin_world`` re-expresses the world origin in the
+    # parent link frame; the round trip ``parent · origin_in_parent`` is exact.
+    # A root parent's identity placement composes as a no-op, so parent-relative
+    # equals world there (pinned by test).
+    parent_rotation = _placement_rotation(parent_placement)
+    if parent_placement is not None:
+        origin_in_parent = _location_from(parent_placement).inverse() * origin_location
+    else:
+        origin_in_parent = origin_location
+    export["origin_in_parent"] = _placement_record(origin_in_parent)
     if kind in _KINEMATIC_KINDS:
-        export["axis"] = _world_axis(world_target)
+        world_axis = _world_axis(world_target)
+        export["axis"] = world_axis
+        # ADR 0048 (D-018): parent-relative axis for URDF ``<axis>``. An axis is a
+        # DIRECTION, so only the parent's rotation is inverted (``R_parentᵀ · v``);
+        # the parent translation must never shift the vector.
+        export["axis_in_parent"] = _apply_inverse_rotation(parent_rotation, world_axis)
     return export
 
 
