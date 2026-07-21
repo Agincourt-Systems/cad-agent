@@ -17,6 +17,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from cadx.density import resolve_density
 from cadx.files import load_yaml, next_run_dir, read_json, write_json, write_yaml
 from cadx.registry import clear_registry, publish, snapshot_registry
 
@@ -403,6 +404,80 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
             if spec.get(key) is not None
         }
     return normalized
+
+
+def _apply_material_density(
+    published: list[dict[str, Any]], part_meta: list[dict[str, Any]]
+) -> None:
+    """Resolve a declared material to a density and a per-part mass (ADR 0035).
+
+    Joins two facts the pipeline already carries but never combined: a material
+    *name* (declared as ``publish(material=...)`` metadata, or via
+    ``publish_part_meta`` and joined here by label) and a part *volume* (in
+    ``mass_properties.volume``). Runs after ``_normalize_published`` — so it sees
+    the finished per-object records — and before diagnostics is written, so the
+    implied densities reach the ADR 0015 assembly center-of-mass weighting.
+
+    Precedence and provenance, per object:
+
+    * An explicit positive ``metadata.density`` always wins and is tagged
+      ``density_source = "explicit"`` (author-supplied densities are never
+      overwritten by a table guess).
+    * Otherwise a resolvable material writes the implied density into
+      ``metadata.density`` and tags ``density_source = "material:<canonical>"``.
+      This is the D-008 fix: a known alloy name now *implies* density with no
+      ``density=`` keyword.
+    * A declared-but-unknown material guesses nothing (behaves as before) and
+      records ``metadata.density_resolved = false`` so the unresolved state is a
+      machine-visible fact rather than a silent gap.
+
+    Whenever a density is resolved and a positive ``volume`` is present, writes
+    ``mass_properties.mass = volume × density`` (grams). The pass mutates records
+    in place and adds no keys when nothing resolves, so runs that declare no
+    material stay byte-identical to before this ADR.
+    """
+
+    # Materials named through publish_part_meta live in a separate list keyed by
+    # label; index them so an object without its own metadata.material can still
+    # inherit one. An object's own metadata.material takes precedence.
+    meta_material_by_label = {
+        record["label"]: record.get("material")
+        for record in part_meta
+        if record.get("label") is not None
+    }
+
+    for record in published:
+        existing = record.get("metadata") or {}
+        material = existing.get("material") or meta_material_by_label.get(record.get("label"))
+        explicit = existing.get("density")
+
+        # Decide what (if anything) to write before touching the record, so a
+        # part that declares neither a material nor a density keeps its exact
+        # pre-ADR shape (no empty ``metadata`` key is synthesized for it).
+        density: float | None = None
+        updates: dict[str, Any] = {}
+        if isinstance(explicit, (int, float)) and explicit > 0:
+            density = float(explicit)
+            updates["density_source"] = "explicit"
+        elif material is not None:
+            resolved = resolve_density(material)
+            if resolved is not None:
+                canonical, density = resolved
+                updates["density"] = density
+                updates["density_source"] = f"material:{canonical}"
+            else:
+                # Declared but unrecognized: record the miss, never a guess.
+                updates["density_resolved"] = False
+
+        if updates:
+            record.setdefault("metadata", {}).update(updates)
+
+        if density is not None:
+            mass_properties = record.get("mass_properties")
+            if isinstance(mass_properties, dict):
+                volume = mass_properties.get("volume")
+                if isinstance(volume, (int, float)) and volume > 0:
+                    mass_properties["mass"] = float(volume) * density
 
 
 def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

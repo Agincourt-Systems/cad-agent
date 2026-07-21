@@ -14,6 +14,7 @@ from typing import Any
 
 from cadx.files import load_yaml, write_json
 from cadx.runner import (
+    _apply_material_density,
     _auto_export_flats,
     _execute_design,
     _export_assembly,
@@ -70,6 +71,10 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
         # normalization or export observes the geometry.
         mate_warnings = _resolve_mates(raw_registry["published"])
         published = [_normalize_published(entry) for entry in raw_registry["published"]]
+        # ADR 0035: resolve declared materials to densities and per-part masses
+        # before diagnostics is written, so the implied densities reach the
+        # assembly center-of-mass aggregation performed by inspect_run.
+        _apply_material_density(published, raw_registry.get("part_meta", []))
         exports: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = list(mate_warnings)
         for entry in raw_registry["published"]:
