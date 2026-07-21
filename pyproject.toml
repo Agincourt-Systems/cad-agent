@@ -14,13 +14,20 @@ dependencies = [
 
 [project.optional-dependencies]
 cad = [
-  "build123d>=0.10",
+  # Capped below 0.11: build123d 0.11.x silently breaks the interference
+  # check (overlaps pass) and crashes the renderer's assembly-combine path.
+  # See ADR 0030 / deficiency D-001. Lift the cap only in the ADR that
+  # adopts the 0.11 API.
+  "build123d>=0.10,<0.11",
 ]
 render = [
   "Pillow>=9.0",
 ]
 test = [
   "pytest>=8.0",
+  # ezdxf backs the DXF flat-pattern parse-back tests; without it those tests
+  # importorskip and silently pass. See ADR 0030 / deficiency D-002.
+  "ezdxf>=1.0",
 ]
 
 [project.scripts]
