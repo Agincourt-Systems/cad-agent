@@ -314,3 +314,111 @@ def test_bend_rejects_invalid_inputs():
         bend(40, 25, **{**kwargs, "thickness": 0})
     with pytest.raises(ValueError):
         bend(40, 25, **{**kwargs, "direction": "sideways"})
+
+
+# --- ADR 0032: multi-bend chains (D-003) ------------------------------------
+#
+# The U-channel from the deficiency: two 90 deg bends over three flanges cut as
+# ONE flat blank. The parameters are chosen to reproduce the deficiency's exact
+# figures: each naive two-flange bend() call would report 30+40+BA == 75.18 mm
+# (double-counting the 40 mm web), while the correct single blank is
+# 30+40+30+2*BA == 110.36 mm. The expected values below are DERIVED from the BA
+# formula, not hardcoded approximations.
+UCHAN_FLANGES = [30.0, 40.0, 30.0]
+UCHAN_THICKNESS = 2.29
+UCHAN_RADIUS = 2.29
+UCHAN_K = 0.44
+UCHAN_WIDTH = 30.0
+UCHAN_BA = (math.pi / 180.0) * 90.0 * (UCHAN_RADIUS + UCHAN_K * UCHAN_THICKNESS)
+UCHAN_DEVELOPED = sum(UCHAN_FLANGES) + 2.0 * UCHAN_BA
+
+
+def _uchannel():
+    from cadx.sheetmetal import bend_chain
+
+    bends = [
+        dict(angle_deg=90.0, inside_radius=UCHAN_RADIUS, k_factor=UCHAN_K, direction="up"),
+        dict(angle_deg=90.0, inside_radius=UCHAN_RADIUS, k_factor=UCHAN_K, direction="up"),
+    ]
+    return bend_chain(UCHAN_FLANGES, bends, thickness=UCHAN_THICKNESS, width=UCHAN_WIDTH)
+
+
+def test_uchannel_single_blank():
+    """Two 90 deg bends become one blank of the correct developed length with two
+    bend lines and a single connected folded solid."""
+
+    part = _uchannel()
+
+    # One blank, developed length = sum(flanges) + sum(BA); the web is counted once.
+    assert part.developed_length == pytest.approx(UCHAN_DEVELOPED, abs=1e-6)
+    assert part.developed_length == pytest.approx(110.36, abs=0.01)
+    # Sanity: NOT the naive per-pair double-count.
+    naive_pair = UCHAN_FLANGES[0] + UCHAN_FLANGES[1] + UCHAN_BA
+    assert naive_pair == pytest.approx(75.18, abs=0.01)
+    assert part.developed_length > naive_pair
+
+    # The single flat blank measures to the developed length across its width.
+    flat_bbox = part.flat_profile.bounding_box()
+    assert flat_bbox.size.X == pytest.approx(UCHAN_DEVELOPED, abs=1e-3)
+    assert flat_bbox.size.Y == pytest.approx(UCHAN_WIDTH, abs=1e-3)
+
+    # Two bend lines / two bend-table rows at the computed developed positions.
+    assert len(part.bend_lines) == 2
+    assert len(part.bends) == 2
+    x0 = UCHAN_FLANGES[0] + UCHAN_BA / 2.0
+    x1 = UCHAN_FLANGES[0] + UCHAN_FLANGES[1] + UCHAN_BA + UCHAN_BA / 2.0
+    got = sorted(row["line"][0][0] for row in part.bends)
+    assert got[0] == pytest.approx(x0, abs=1e-6)
+    assert got[1] == pytest.approx(x1, abs=1e-6)
+    for row in part.bends:
+        assert row["angle"] == pytest.approx(90.0)
+        assert row["inside_radius"] == pytest.approx(UCHAN_RADIUS)
+        assert row["direction"] == "up"
+
+    # One CONNECTED folded solid usable by interference / CoM machinery.
+    assert part.folded.volume > 0
+    assert len(part.folded.solids()) == 1
+
+
+def test_bend_delegates_to_chain():
+    """bend() is unchanged: same developed length, one bend line, same envelope."""
+
+    from cadx.sheetmetal import bend
+
+    part = bend(
+        FLANGE_A,
+        FLANGE_B,
+        angle_deg=ANGLE_DEG,
+        inside_radius=INSIDE_RADIUS,
+        k_factor=K_FACTOR,
+        thickness=THICKNESS,
+        width=WIDTH,
+        direction="up",
+    )
+    assert part.developed_length == pytest.approx(EXPECTED_DEVELOPED_LENGTH, abs=1e-6)
+    assert len(part.bend_lines) == 1
+    assert len(part.bends) == 1
+    size = part.folded.bounding_box().size
+    assert size.X == pytest.approx(FLANGE_A + THICKNESS, abs=1e-3)
+    assert size.Y == pytest.approx(WIDTH, abs=1e-3)
+    assert size.Z == pytest.approx(FLANGE_B, abs=1e-3)
+
+
+def test_bend_chain_validates_lengths():
+    """A flanges/bends mismatch or a bad direction raises a clear ValueError."""
+
+    from cadx.sheetmetal import bend_chain
+
+    good = dict(angle_deg=90.0, inside_radius=3.0, k_factor=0.44, direction="up")
+    # Two flanges need exactly one bend.
+    with pytest.raises(ValueError):
+        bend_chain([30.0, 40.0], [good, good], thickness=3.0, width=30.0)
+    # Three flanges need exactly two bends.
+    with pytest.raises(ValueError):
+        bend_chain([30.0, 40.0, 30.0], [good], thickness=3.0, width=30.0)
+    # Fewer than two flanges is degenerate.
+    with pytest.raises(ValueError):
+        bend_chain([30.0], [], thickness=3.0, width=30.0)
+    # Bad direction inside a bend dict.
+    with pytest.raises(ValueError):
+        bend_chain([30.0, 40.0], [{**good, "direction": "sideways"}], thickness=3.0, width=30.0)
