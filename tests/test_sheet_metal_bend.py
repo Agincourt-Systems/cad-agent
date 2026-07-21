@@ -422,3 +422,166 @@ def test_bend_chain_validates_lengths():
     # Bad direction inside a bend dict.
     with pytest.raises(ValueError):
         bend_chain([30.0, 40.0], [{**good, "direction": "sideways"}], thickness=3.0, width=30.0)
+
+
+# --- ADR 0033: bends as spatial features so bend DFM rules fire (D-004) -------
+#
+# The deficiency: a part folded with a sub-minimum inside radius silently PASSES
+# manufacturability because publish_sheet_metal records bends only in bends.json,
+# never as kind="bend" spatial features, so the min_bend_radius / hole_to_bend
+# DFM rules are inert on the only path that produces bends. These tests drive the
+# real cadx run + evaluate subprocess path.
+
+# Sub-minimum radius on 2.29 mm stock: 0.5 mm ~= 0.22 t, which SendCutSend rejects.
+DFM_THICKNESS = 2.29
+
+
+def _sheet_dfm_design(inside_radius: float, extra: str = "") -> str:
+    """A design that folds a 40/25 bracket with the given inside radius.
+
+    ``extra`` is optional python injected after publish_sheet_metal (e.g. to
+    publish a hole feature in the flat-pattern frame).
+    """
+
+    return f"""
+from cadx import publish_sheet_metal, publish_feature
+from cadx.sheetmetal import bend
+
+
+def build(params):
+    part = bend(
+        40.0, 25.0,
+        angle_deg=90.0, inside_radius={inside_radius}, k_factor=0.44,
+        thickness={DFM_THICKNESS}, width=30.0, direction="up",
+    )
+    publish_sheet_metal("bracket", part)
+{extra}
+    return part.folded
+"""
+
+
+def _run_design_src(tmp_path: Path, source: str) -> Path:
+    design = tmp_path / "design.py"
+    design.write_text(source, encoding="utf-8")
+    (tmp_path / "params.yaml").write_text("{}\n", encoding="utf-8")
+    payload = parse_stdout_json(run_cadx(tmp_path, "run", "design.py", "--params", "params.yaml"))
+    assert payload["status"] == "ok", payload
+    return tmp_path / payload["artifact_dir"]
+
+
+def _evaluate_dfm(tmp_path: Path, run_dir: Path, rules_yaml: str) -> dict:
+    requirements = tmp_path / "dfm.yaml"
+    requirements.write_text(rules_yaml, encoding="utf-8")
+    parse_stdout_json(run_cadx(tmp_path, "evaluate", str(run_dir), "--requirements", str(requirements)))
+    checks = json.loads((run_dir / "checks.json").read_text(encoding="utf-8"))
+    assert len(checks["checks"]) == 1, checks
+    return checks["checks"][0]
+
+
+_MIN_BEND_RADIUS_RULE = f"""
+units: mm
+checks:
+  - id: bracket_dfm
+    type: manufacturability
+    object: obj.bracket
+    thickness: {DFM_THICKNESS}
+    rules:
+      - rule: min_bend_radius
+"""
+
+
+def test_min_bend_radius_fires_on_real_bend_flow(tmp_path):
+    """A sub-minimum inside radius must now FAIL manufacturability (it silently
+    passed in the deficiency because no kind='bend' feature was ever published)."""
+
+    run_dir = _run_design_src(tmp_path, _sheet_dfm_design(inside_radius=0.5))
+
+    # The emitted bend feature is visible in spatial.json.
+    spatial = json.loads((run_dir / "spatial.json").read_text(encoding="utf-8"))
+    bend_feats = [f for f in spatial["features"] if f.get("kind") == "bend"]
+    assert len(bend_feats) == 1, spatial["features"]
+    assert bend_feats[0]["inside_radius"] == pytest.approx(0.5)
+    assert bend_feats[0]["source_object"] == "obj.bracket"
+    assert "line" in bend_feats[0]
+
+    check = _evaluate_dfm(tmp_path, run_dir, _MIN_BEND_RADIUS_RULE)
+    assert check["status"] == "fail", check
+    cited = {fid for v in check["violations"] if v["rule"] == "min_bend_radius" for fid in v["features"]}
+    assert "feat.bracket_bend_0" in cited
+
+
+def test_min_bend_radius_passes_adequate_radius(tmp_path):
+    """The rule is bound, not always-failing: an adequate radius passes."""
+
+    run_dir = _run_design_src(tmp_path, _sheet_dfm_design(inside_radius=DFM_THICKNESS))
+    check = _evaluate_dfm(tmp_path, run_dir, _MIN_BEND_RADIUS_RULE)
+    assert check["status"] == "pass", check
+
+
+def test_hole_to_bend_binds_on_real_bend_flow(tmp_path):
+    """A hole published in the flat-pattern frame too close to the bend line fails
+    hole_to_bend, naming the hole and the bend."""
+
+    # BA/2 for a 90 deg bend, r=2.29, k=0.44, t=2.29 -> bend line at x = 40 + BA/2.
+    import math as _math
+
+    ba = (_math.pi / 180.0) * 90.0 * (DFM_THICKNESS + 0.44 * DFM_THICKNESS)
+    bend_x = 40.0 + ba / 2.0
+    # Hole 1 mm past the bend line: edge is ~1 - 1.5 mm from the line, well within
+    # the hole_to_bend limit (2 * thickness).
+    hole_center_x = bend_x + 1.0
+    extra = f"""    publish_feature(
+        "crowding_hole",
+        kind="cylindrical_hole",
+        diameter=3.0,
+        center=[{hole_center_x}, 0.0, 0.0],
+        axis=[0, 0, 1],
+        through=True,
+        source_object="obj.bracket",
+    )"""
+    run_dir = _run_design_src(tmp_path, _sheet_dfm_design(inside_radius=DFM_THICKNESS, extra=extra))
+
+    rules = f"""
+units: mm
+checks:
+  - id: bracket_dfm
+    type: manufacturability
+    object: obj.bracket
+    thickness: {DFM_THICKNESS}
+    rules:
+      - rule: hole_to_bend
+"""
+    check = _evaluate_dfm(tmp_path, run_dir, rules)
+    assert check["status"] == "fail", check
+    cited = {fid for v in check["violations"] if v["rule"] == "hole_to_bend" for fid in v["features"]}
+    assert "feat.crowding_hole" in cited
+    assert "feat.bracket_bend_0" in cited
+
+
+def test_bend_chain_emits_two_bend_features(tmp_path):
+    """A U-channel chain publishes one kind='bend' feature per bend."""
+
+    design = """
+from cadx import publish_sheet_metal
+from cadx.sheetmetal import bend_chain
+
+
+def build(params):
+    bends = [
+        dict(angle_deg=90.0, inside_radius=2.29, k_factor=0.44, direction="up"),
+        dict(angle_deg=90.0, inside_radius=2.29, k_factor=0.44, direction="up"),
+    ]
+    part = bend_chain([30.0, 40.0, 30.0], bends, thickness=2.29, width=30.0)
+    publish_sheet_metal("uchan", part)
+    return part.folded
+"""
+    run_dir = _run_design_src(tmp_path, design)
+    spatial = json.loads((run_dir / "spatial.json").read_text(encoding="utf-8"))
+    bend_feats = sorted(
+        (f for f in spatial["features"] if f.get("kind") == "bend"), key=lambda f: f["id"]
+    )
+    assert [f["id"] for f in bend_feats] == ["feat.uchan_bend_0", "feat.uchan_bend_1"]
+    for feat in bend_feats:
+        assert feat["inside_radius"] == pytest.approx(2.29)
+        assert feat["source_object"] == "obj.uchan"
+        assert "line" in feat

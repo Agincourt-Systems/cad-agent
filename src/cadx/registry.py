@@ -187,6 +187,15 @@ def publish_sheet_metal(label: str, part: Any, *, layer: str = "cut", role: str 
     emit the combined cut+bend DXF and the ``bends.json`` bend table. The internal
     ``flat`` key also makes auto-flatten (ADR 0013) skip this entry, so the bend
     DXF is never overwritten by a naive flatten of the folded solid.
+
+    ADR 0033 (deficiency D-004): each bend is ALSO published as a ``kind="bend"``
+    spatial feature so the ``min_bend_radius`` / ``hole_to_bend`` DFM rules (which
+    only inspect ``spatial.json`` features) finally bind on the real bend flow.
+    Previously bends were recorded only in ``bends.json``, leaving those safety
+    rules inert — a sub-minimum inside radius passed manufacturability silently.
+    The feature's ``line`` (and its midpoint ``center``) are emitted in the
+    flat-pattern frame, the same coordinates ``bends.json`` carries, so the press-
+    brake table and the DFM feature share one definition of every bend line.
     """
 
     _PUBLISHED.append(
@@ -204,6 +213,29 @@ def publish_sheet_metal(label: str, part: Any, *, layer: str = "cut", role: str 
             },
         }
     )
+
+    # Emit one kind="bend" spatial feature per bend so the bend DFM rules fire.
+    # ``publish_feature`` namespaces the id as ``feat.<id>``; ``source_object``
+    # binds each bend to this part's published object (``obj.<label>``) for
+    # thickness resolution and hole-to-bend pairing. The ``line`` is the flat-
+    # pattern bend line (as in ``bends.json``); ``center`` is its midpoint.
+    for index, row in enumerate(part.bends):
+        line = row["line"]
+        center = [
+            (line[0][0] + line[1][0]) / 2.0,
+            (line[0][1] + line[1][1]) / 2.0,
+            0.0,
+        ]
+        publish_feature(
+            f"{label}_bend_{index}",
+            "bend",
+            inside_radius=row["inside_radius"],
+            line=line,
+            center=center,
+            angle=row["angle"],
+            direction=row["direction"],
+            source_object=f"obj.{label}",
+        )
 
 
 def publish_feature(feature_id: str, kind: str, **properties: Any) -> None:
