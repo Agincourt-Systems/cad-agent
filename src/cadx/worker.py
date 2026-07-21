@@ -74,9 +74,13 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
         # ADR 0035: resolve declared materials to densities and per-part masses
         # before diagnostics is written, so the implied densities reach the
         # assembly center-of-mass aggregation performed by inspect_run.
-        _apply_material_density(published, raw_registry.get("part_meta", []))
+        # ADR 0045: the same pass returns material_unresolved warnings for any
+        # material that did not resolve (and had no explicit density); fold them
+        # into the run's warnings channel so a gate can assert on them.
+        material_warnings = _apply_material_density(published, raw_registry.get("part_meta", []))
         exports: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = list(mate_warnings)
+        warnings.extend(material_warnings)
         for entry in raw_registry["published"]:
             entry_exports, entry_warnings = _export_build123d_object(entry, run_dir)
             exports.extend(entry_exports)

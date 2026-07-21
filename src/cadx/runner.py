@@ -524,7 +524,7 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _apply_material_density(
     published: list[dict[str, Any]], part_meta: list[dict[str, Any]]
-) -> None:
+) -> list[dict[str, Any]]:
     """Resolve a declared material to a density and a per-part mass (ADR 0035).
 
     Joins two facts the pipeline already carries but never combined: a material
@@ -551,6 +551,21 @@ def _apply_material_density(
     ``mass_properties.mass = volume × density`` (grams). The pass mutates records
     in place and adds no keys when nothing resolves, so runs that declare no
     material stay byte-identical to before this ADR.
+
+    ADR 0045 (deficiency D-016): the per-object ``density_resolved = false`` fact
+    above is necessary but not *surfaced* — a gate that watches only the run's
+    ``warnings`` channel never sees it, so a misdeclared alloy silently ships a
+    massless part. This pass therefore also RETURNS a list of structured
+    ``material_unresolved`` warnings — one per object that declared a material
+    which did not resolve and carried no explicit density. The warning mirrors the
+    ``mate_out_of_range`` record shape (``type``/``label``/``message``) and adds
+    the offending ``material`` string. It is emitted from exactly that one branch,
+    so the three quiet cases fall out for free: a resolving material takes the
+    resolve branch, an explicit density takes the explicit branch first (even
+    alongside an unknown name), and a part with no material runs neither branch.
+    The caller (the worker) folds these into the run's ``warnings`` list; the run
+    status is unaffected — this is a warning a consumer may choose to gate on, not
+    a failure.
     """
 
     # Materials named through publish_part_meta live in a separate list keyed by
@@ -561,6 +576,11 @@ def _apply_material_density(
         for record in part_meta
         if record.get("label") is not None
     }
+
+    # ADR 0045: structured warnings for materials that were declared but did not
+    # resolve to a density (and had no explicit density to fall back on). Returned
+    # to the caller, which folds them into the run's diagnostics warnings.
+    warnings: list[dict[str, Any]] = []
 
     for record in published:
         existing = record.get("metadata") or {}
@@ -582,8 +602,21 @@ def _apply_material_density(
                 updates["density"] = density
                 updates["density_source"] = f"material:{canonical}"
             else:
-                # Declared but unrecognized: record the miss, never a guess.
+                # Declared but unrecognized: record the miss, never a guess, and
+                # surface it as a warning so a gate watching the warnings channel
+                # sees the massless part (D-016). Mirrors the mate_out_of_range
+                # record shape and adds the offending material string.
                 updates["density_resolved"] = False
+                label = record.get("label")
+                warnings.append(
+                    {
+                        "type": "material_unresolved",
+                        "label": label,
+                        "material": material,
+                        "message": f"material {material!r} on {label!r} did not resolve "
+                        "to a density; part has no mass",
+                    }
+                )
 
         if updates:
             record.setdefault("metadata", {}).update(updates)
@@ -594,6 +627,8 @@ def _apply_material_density(
                 volume = mass_properties.get("volume")
                 if isinstance(volume, (int, float)) and volume > 0:
                     mass_properties["mass"] = float(volume) * density
+
+    return warnings
 
 
 def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
