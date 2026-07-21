@@ -384,8 +384,74 @@ def _merge_features(
     return merged
 
 
+def _coerce_matrix(value: Any) -> list[list[float]] | None:
+    """Return a 3x3 float matrix, or ``None`` when malformed.
+
+    Guards the assembly-inertia aggregation (ADR 0036) against a part whose
+    ``matrix_of_inertia`` is absent or the wrong shape: such a part cannot
+    contribute its spin term, so the aggregate must decline rather than
+    silently under-report.
+    """
+
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    matrix: list[list[float]] = []
+    for row in value:
+        if not isinstance(row, (list, tuple)) or len(row) != 3:
+            return None
+        try:
+            matrix.append([float(component) for component in row])
+        except (TypeError, ValueError):
+            return None
+    return matrix
+
+
+def _aggregate_inertia(
+    parts: list[tuple[float, list[float], float | None, list[list[float]]]],
+    center_of_mass: list[float],
+    all_have_density: bool,
+) -> list[list[float]]:
+    """Compose an aggregate inertia tensor about the assembly center of mass.
+
+    Each part carries a unit-density geometric tensor ``G`` (mm^5, about its own
+    centroid, world axes; ADR 0015 computes it on the *placed* object so no
+    body-frame rotation is hidden). Because every ``G`` is already in world axes,
+    aggregation needs no rotation — only density scaling and a parallel-axis
+    *translation*:
+
+        I  =  sum_i [ w_i * G_i  +  m_i * ( |d_i|^2 * E3  -  d_i (x) d_i ) ]
+
+    with ``d_i = c_i - com``. When every part has a density (``all_have_density``)
+    the weights are physical (``w_i = rho_i``, ``m_i = rho_i * V_i``) and the
+    result is a mass moment in g*mm^2; otherwise the volume itself is the weight
+    (``w_i = 1``, ``m_i = V_i``) and the result is a geometric second moment in
+    mm^5 — the inertial analogue of the volume-weighted center of mass, so the
+    two degrade together (see ADR 0036).
+    """
+
+    tensor = [[0.0, 0.0, 0.0] for _ in range(3)]
+    for volume, center, density, geometric in parts:
+        if all_have_density:
+            # density is guaranteed non-None in this branch (all_have_density).
+            weight = float(density)  # type: ignore[arg-type]
+            point_mass = weight * volume
+        else:
+            weight = 1.0
+            point_mass = volume
+
+        offset = [center[axis] - center_of_mass[axis] for axis in range(3)]
+        d_squared = sum(component * component for component in offset)
+        for i in range(3):
+            for j in range(3):
+                # Scaled own-centroid spin term plus the parallel-axis transfer.
+                identity = 1.0 if i == j else 0.0
+                transfer = point_mass * (d_squared * identity - offset[i] * offset[j])
+                tensor[i][j] += weight * geometric[i][j] + transfer
+    return tensor
+
+
 def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Mass-weighted center of mass across published part-role objects.
+    """Mass-weighted center of mass (and inertia) across published part objects.
 
     Each contributing part needs a positive ``mass_properties.volume`` and a
     3-vector ``mass_properties.center_of_mass``. A part's weight is
@@ -393,13 +459,20 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
     volume (a uniform-density approximation). Weighting is reported as ``"mass"``
     only when *every* contributing part supplied a positive density, otherwise
     ``"volume"`` — so a uniform-density guess is never silently presented as a
-    true mass center. ADR 0017's part metadata supplies real densities later;
-    until then this degrades gracefully. Returns ``None`` when no part qualifies.
+    true mass center. ADR 0035's material table supplies real densities; until
+    then this degrades gracefully. Returns ``None`` when no part qualifies.
+
+    ADR 0036 adds an aggregate ``inertia`` tensor about the assembly center of
+    mass, composed by :func:`_aggregate_inertia` from the same qualifying parts
+    so the center of mass and the inertia are always mutually consistent. The
+    ``inertia`` block is emitted only when *every* qualifying part exposes a valid
+    3x3 ``matrix_of_inertia`` — otherwise the aggregate would omit a part's spin
+    term and under-report, so it is dropped rather than published wrong.
     """
 
-    # First pass: collect qualifying parts with their volume, centroid, and any
-    # positive density.
-    qualifying: list[tuple[float, list[float], float | None]] = []
+    # First pass: collect qualifying parts with their volume, centroid, any
+    # positive density, and their (optional) geometric inertia tensor.
+    qualifying: list[tuple[float, list[float], float | None, list[list[float]] | None]] = []
     for obj in objects:
         # Aggregate every physical part. The primary part is idiomatically
         # published as role="final" (the starter design and most assemblies do),
@@ -414,7 +487,8 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
             continue
         density = obj.get("metadata", {}).get("density")
         density = float(density) if isinstance(density, (int, float)) and density > 0 else None
-        qualifying.append((float(volume), center, density))
+        inertia = _coerce_matrix(mass_properties.get("matrix_of_inertia"))
+        qualifying.append((float(volume), center, density, inertia))
 
     if not qualifying:
         return None
@@ -423,10 +497,10 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
     # or absent-density case, weight purely by volume so the result is a
     # consistent uniform-density centroid rather than a unit-inconsistent hybrid
     # of mass weights and volume weights.
-    all_have_density = all(density is not None for _, _, density in qualifying)
+    all_have_density = all(density is not None for _, _, density, _ in qualifying)
     contributions = [
         (volume * density if all_have_density else volume, center)
-        for volume, center, density in qualifying
+        for volume, center, density, _ in qualifying
     ]
     total = sum(weight for weight, _ in contributions)
     if total <= 0:
@@ -435,12 +509,26 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
         sum(weight * center[axis] for weight, center in contributions) / total
         for axis in range(3)
     ]
-    return {
+    assembly: dict[str, Any] = {
         "center_of_mass": center_of_mass,
         "mass": total,
         "weighting": "mass" if all_have_density else "volume",
         "part_count": len(contributions),
     }
+
+    # ADR 0036: aggregate inertia only when every qualifying part carries a valid
+    # 3x3 tensor, so the published tensor is always a complete sum.
+    if all(inertia is not None for _, _, _, inertia in qualifying):
+        parts = [
+            (volume, center, density, inertia)
+            for volume, center, density, inertia in qualifying
+        ]
+        assembly["inertia"] = {
+            "tensor": _aggregate_inertia(parts, center_of_mass, all_have_density),
+            "about": "assembly center of mass",
+            "axes": "world",
+        }
+    return assembly
 
 
 def inspect_run(run_dir: Path) -> dict[str, Any]:
