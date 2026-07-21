@@ -123,4 +123,28 @@ Written so the new tests fail before implementation and pass after.
 
 ## After Action Report
 
-_To be completed after implementation._
+The red state failed as predicted: `_apply_material_density` returned `None`, so
+the four unit tests could not obtain a warning list from it and the end-to-end
+test found an empty `warnings` array — all 5 new tests failed before the change.
+
+Implementation landed exactly as designed and stayed minimal. The warning is
+emitted from the *one* pre-existing "declared but unrecognized" branch of
+`_apply_material_density`, so the three silent cases (resolving material, explicit
+density, no material) required no new conditionals — they simply never reach that
+branch. The signature changed from `-> None` to `-> list[dict]`, and the only
+other edit was the worker folding the returned list into the warnings channel it
+already builds. No schema key was added and run status is unchanged.
+
+Two design points earned their keep. First, keying the warning `"type"` (not
+`"kind"`) to mirror `mate_out_of_range` means a gate can filter every run warning
+uniformly. Second, letting the *explicit-density* branch win first is what makes
+`material="unobtanium"` + `density=0.004` stay silent — the explicit-intent test
+pins that an author who supplied a density is never nagged about an unrecognized
+name.
+
+Coverage: unit tests pin all four cases (warn / resolve-silent / explicit-silent /
+no-material-silent) plus preservation of the ADR 0035 `density_resolved`/`mass`
+behavior; an end-to-end `cadx run` test confirms the warning reaches
+`diagnostics.json` with `status:"ok"` unchanged. All 5 new tests pass and the 6
+ADR 0035 material-density tests remain green. The full suite is green end-to-end
+at the top of the stacked branch (through ADR 0046): 212 passed, no regressions.
