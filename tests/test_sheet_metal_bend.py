@@ -877,3 +877,74 @@ def test_no_holes_leaves_flat_profile_bare():
     )
     assert part.holes == []
     assert len(part.flat_profile.faces()[0].inner_wires()) == 0
+
+
+# --- ADR 0042: documented width-extrusion frame (D-024) ----------------------
+#
+# The folded solid is extruded across its width to one side of y = 0, spanning
+# y in [-width, 0] (NOT centred), while the flat pattern is width-centred on
+# y in [-width/2, +width/2]. These pin that frame so a future regression is loud,
+# and exercise the opt-in center_width keyword that aligns the folded solid with
+# the flat-pattern (symmetric) frame.
+
+
+def test_folded_solid_width_frame_single():
+    """Regression pin: a single-bend folded solid spans y in [-width, 0]."""
+
+    from cadx.sheetmetal import bend
+
+    part = bend(
+        FLANGE_A, FLANGE_B, angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS,
+        k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="up",
+    )
+    bb = part.folded.bounding_box()
+    assert bb.min.Y == pytest.approx(-WIDTH, abs=1e-6)
+    assert bb.max.Y == pytest.approx(0.0, abs=1e-6)
+
+
+def test_folded_solid_width_frame_chain():
+    """Regression pin: a chain folded solid also spans y in [-width, 0]."""
+
+    part = _uchannel()
+    bb = part.folded.bounding_box()
+    assert bb.min.Y == pytest.approx(-UCHAN_WIDTH, abs=1e-6)
+    assert bb.max.Y == pytest.approx(0.0, abs=1e-6)
+
+
+def test_center_width_centres_folded_solid():
+    """center_width=True translates the folded solid to the width-centred frame
+    y in [-width/2, +width/2], preserving volume and the flat-pattern bend line."""
+
+    from cadx.sheetmetal import bend
+
+    kwargs = dict(
+        angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS, k_factor=K_FACTOR,
+        thickness=THICKNESS, width=WIDTH, direction="up",
+    )
+    default = bend(FLANGE_A, FLANGE_B, **kwargs)
+    centred = bend(FLANGE_A, FLANGE_B, center_width=True, **kwargs)
+
+    bb = centred.folded.bounding_box()
+    assert bb.min.Y == pytest.approx(-WIDTH / 2.0, abs=1e-6)
+    assert bb.max.Y == pytest.approx(WIDTH / 2.0, abs=1e-6)
+    # Only the y position moved: volume and x/z extents are identical.
+    assert centred.folded.volume == pytest.approx(default.folded.volume, rel=1e-9)
+    default_bb = default.folded.bounding_box()
+    assert bb.size.X == pytest.approx(default_bb.size.X, abs=1e-6)
+    assert bb.size.Z == pytest.approx(default_bb.size.Z, abs=1e-6)
+    # The flat-pattern bend line is untouched by the fold's y placement.
+    assert centred.bends[0]["line"][0][0] == pytest.approx(FLANGE_A + EXPECTED_BA / 2.0, abs=1e-6)
+
+
+def test_center_width_defaults_false():
+    """The default folded frame is y in [-width, 0], unchanged from before."""
+
+    from cadx.sheetmetal import bend
+
+    part = bend(
+        FLANGE_A, FLANGE_B, angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS,
+        k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="up",
+    )
+    bb = part.folded.bounding_box()
+    assert bb.min.Y == pytest.approx(-WIDTH, abs=1e-6)
+    assert bb.max.Y == pytest.approx(0.0, abs=1e-6)

@@ -133,6 +133,40 @@ checks:
 plus `cadx bom <run_dir>` produce a deterministic `bom.csv`/`bom.json`, and every
 export record carries explicit millimeter units.
 
+### Sheet-metal parts (`bend` / `bend_chain`)
+
+A bent bracket is described once and yields a folded 3-D solid plus a single flat
+blank. Holes and cutouts are placed in **flange-local** frames and unfolded into
+the blank, so they reach the DXF cut layer, the folded solid, and the DFM
+features together:
+
+```python
+from cadx.sheetmetal import bend
+from cadx import publish_sheet_metal, mate
+from build123d import Location
+
+part = bend(40, 25, angle_deg=90, inside_radius=3, k_factor=0.44,
+            thickness=3, width=30, direction="up",
+            holes=[{"flange": 0, "u": 20, "v": 0, "diameter": 6}])  # round hole on flange 0
+# A folded part is a normal placed/mated part (a clevis is folded sheet):
+publish_sheet_metal("clevis", part,
+                    mate=mate(to="base", kind="revolute",
+                              anchor=Location((0, 0, 0)), target=Location((30, 0, 6)), angle=35))
+```
+
+A hole `u` runs from its flange's leading edge; `v` runs across the width from the
+centreline. A hole that would straddle a bend line, or run off the blank, is a
+clear error.
+
+**Coordinate frames.** The flat pattern is width-centred (`x in [0, developed]`,
+`y in [-width/2, +width/2]`). The folded solid puts the base flange's lower fibre
+on `z = 0`, the length along `+x`, and by default is extruded across its width to
+`y in [-width, 0]` (to one side of `y = 0`, *not* centred). Pass
+`center_width=True` to `bend` / `bend_chain` to shift only the folded solid to the
+width-centred `y in [-width/2, +width/2]` frame. `placement` / `mate` move the
+folded solid but never the flat pattern, bend table, or bend/hole features — those
+stay in flat-pattern coordinates.
+
 ## Assemblies
 
 Position parts in a shared frame with `publish(label, obj,

@@ -16,6 +16,15 @@ ADR 0016 shipped the single-bend ``bend(flange_a, flange_b, ...)`` helper. ADR
 *chain* — U-channels and clevis brackets with two 90-degree bends cut as ONE flat
 blank — and re-expresses ``bend`` as a thin wrapper over ``bend_chain`` so the
 single-bend API and all its published behaviour are unchanged.
+
+Coordinate frames (ADR 0042, deficiency D-024). The **flat pattern** is
+width-centred: it spans ``x in [0, developed_length]`` and ``y in [-width/2,
++width/2]``. The **folded solid** places the base flange's lower fibre on ``z =
+0`` with the developed length along ``+x``, and by default is extruded across its
+width to ``y in [-width, 0]`` — to one side of ``y = 0``, *not* centred on it. The
+opt-in ``center_width=True`` keyword shifts only the folded solid to the
+width-centred ``y in [-width/2, +width/2]`` frame. These conventions are stated so
+an assembly author is never surprised by the half-width offset D-024 reported.
 """
 
 from __future__ import annotations
@@ -69,6 +78,7 @@ def _folded_profile(
     thickness: float,
     width: float,
     holes: list[dict[str, Any]] | None = None,
+    center_width: bool = False,
 ) -> Any:
     """Connected, volume-conserving folded solid for any bend chain (ADR 0034).
 
@@ -165,6 +175,14 @@ def _folded_profile(
     # prism ``area * t`` — the basis of ADR 0040's volume identity.
     for hole in holes or []:
         solid = _subtract_hole(solid, hole, flange_frames, thickness=thickness, width=width)
+
+    # ADR 0042 (D-024): by default the folded solid spans y in [-width, 0] (the
+    # Plane.XZ extrude normal is -y). center_width shifts it by +width/2 so it
+    # spans the width-centred y in [-width/2, +width/2], aligned with the flat
+    # pattern. A rigid translation: volume and every other extent are unchanged,
+    # and holes (already cut above) move with the solid.
+    if center_width:
+        solid = solid.translate((0.0, width / 2.0, 0.0))
     return solid
 
 
@@ -294,6 +312,7 @@ def bend_chain(
     thickness: float,
     width: float,
     holes: list[dict[str, Any]] | None = None,
+    center_width: bool = False,
 ) -> SheetMetalPart:
     """Model an ordered flange/bend chain as ONE flat blank + folded solid.
 
@@ -308,6 +327,17 @@ def bend_chain(
     ``sum(flanges[0..j]) + sum(BA[0..j-1]) + BA_j/2`` — the centreline of its bend
     region — and spans the full width. The folded solid is a single connected,
     volume-conserving swept ribbon (:func:`_folded_profile`, ADR 0034).
+
+    **Folded-solid frame (ADR 0042, D-024).** The base flange's lower fibre lies
+    on ``z = 0`` and the developed length runs along ``+x``. By default the part
+    is extruded across its width to **``y in [-width, 0]``** — i.e. to one side of
+    the ``y = 0`` plane, *not* centred on it. (The flat pattern, by contrast, is
+    width-centred on ``y in [-width/2, +width/2]``.) Passing ``center_width=True``
+    translates only the folded solid by ``+width/2`` in ``y`` so it spans the
+    width-centred ``y in [-width/2, +width/2]``, aligned with the flat pattern;
+    this is a rigid translation that leaves volume, the flat pattern, the bend
+    lines, ``bends.json``, and every spatial feature unchanged. The default is
+    ``False`` because downstream consumers depend on the historical frame.
 
     ``holes`` (ADR 0040, D-019) is an optional list of hole/cutout primitives in
     **flange-local** frames — ``{"flange": j, "u": <along>, "v": <across>,
@@ -414,6 +444,7 @@ def bend_chain(
         thickness=thickness,
         width=width,
         holes=resolved_holes,
+        center_width=center_width,
     )
 
     return SheetMetalPart(
@@ -437,6 +468,7 @@ def bend(
     width: float,
     direction: str = "up",
     holes: list[dict[str, Any]] | None = None,
+    center_width: bool = False,
 ) -> SheetMetalPart:
     """Model a two-flange (one-bend) sheet-metal strip.
 
@@ -449,7 +481,9 @@ def bend(
     single-bend chain. The developed length is ``flange_a + BA + flange_b`` and the
     single bend line sits at ``flange_a + BA/2`` (the bend-region centerline).
     ``holes`` (ADR 0040) is passed straight through: flange 0 is ``flange_a`` and
-    flange 1 is ``flange_b``.
+    flange 1 is ``flange_b``. ``center_width`` (ADR 0042) controls the folded
+    solid's width frame — see :func:`bend_chain`; the default ``False`` keeps the
+    historical ``y in [-width, 0]`` frame.
     """
 
     if flange_a < 0 or flange_b < 0:
@@ -468,4 +502,5 @@ def bend(
         thickness=thickness,
         width=width,
         holes=holes,
+        center_width=center_width,
     )
