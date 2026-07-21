@@ -198,6 +198,32 @@ default palette so bare assemblies still render with distinguishable parts;
 unknown names fall back to the palette with an `appearance_unknown` warning in
 the render manifest.
 
+## Mass properties, density, and inertia
+
+A declared `material` also implies **physics** (independent of appearance). A known
+alloy name — via `publish(..., material="6061-T6")` or `publish_part_meta` — resolves
+to a density from the built-in table in `cadx.density` (g/mm³: 6061-T6, 5052-H32, 304
+stainless, 1018/mild steel, brass, ABS, PLA, PETG, Ti-6Al-4V), and each part's
+`mass_properties` then carries `mass = volume × density` (grams). An explicit
+`publish(..., density=<g/mm³>)` always overrides the table; an unknown material sets
+`metadata.density_resolved = false` and guesses nothing. `metadata.density_source`
+records whether a density was author-supplied (`"explicit"`) or looked up
+(`"material:<name>"`).
+
+Inertia carries a **unit trap** worth stating plainly, so each tensor ships a
+semantics record beside it:
+
+- Per part, `mass_properties.matrix_of_inertia` is a **unit-density geometric** second
+  moment in **mm⁵**, about the **part centroid**, in **world axes at the placed pose**
+  (density is *not* applied; a rotated part shows world-axis off-diagonals). The
+  sibling `matrix_of_inertia_semantics` states exactly this. To get a mass moment,
+  multiply by density and convert units.
+- Per assembly (≥1 qualifying part), `spatial.json` `assembly.inertia` aggregates the
+  per-part tensors about the assembly center of mass by the parallel-axis theorem (no
+  rotation needed — the parts are already in world axes). Its `units`/`density` fields
+  are `g*mm^2` / `mass-weighted` when every part has a density, else `mm^5` /
+  `unit (geometric)`, matching the `assembly.weighting` field.
+
 Screenshot lighting is steerable per `cadx shots` invocation:
 `--light camera` front-lights each view with its own camera (the one-flag fix
 for dark side/rear views), and `--light X,Y,Z` sets an explicit direction —

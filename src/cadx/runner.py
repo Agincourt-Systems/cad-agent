@@ -92,6 +92,20 @@ def _mass_properties(obj: Any) -> dict[str, Any]:
         pass
     try:
         properties["matrix_of_inertia"] = [[float(component) for component in row] for row in obj.matrix_of_inertia]
+        # ADR 0037: describe the tensor so a consumer never has to infer the
+        # D-007 unit trap. build123d's matrix_of_inertia is a UNIT-DENSITY
+        # geometric second moment in mm^5 (density never applied), taken about
+        # the part centroid, and — because ADR 0015 computes it on the *placed*
+        # object — expressed in world axes at the placed pose (a rotated part
+        # shows off-diagonals in world axes, not body axes). The base field stays
+        # a bare 3x3 list so downstream probes that pin it are untouched; the
+        # semantics ride in this sibling key, emitted together with the tensor.
+        properties["matrix_of_inertia_semantics"] = {
+            "units": "mm^5",
+            "density": "unit (geometric)",
+            "about": "part centroid",
+            "axes": "world at placed pose",
+        }
     except Exception:
         pass
     return properties

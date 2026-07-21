@@ -46,6 +46,23 @@ CLI is the agent-facing interface. Those tests exercise:
   the mixed-density volume fallback; the `center_of_mass` check (point, region,
   object target, missing-assembly error); and the `stability` check (inside,
   outside with negative margin, tip-angle gating, degenerate support).
+- Material density and per-part mass (ADR 0035): the `cadx.density` table lookup
+  across spelling variants (canonical, forgiving, and the non-matching
+  `"plastic"`/unknown/non-string cases); the runner join asserting explicit-density
+  override, the `publish_part_meta` material join, the unknown-material
+  `density_resolved=false` path; and end-to-end implied `metadata.density` +
+  `mass_properties.mass` on a real solid plus the upgrade of assembly aggregation
+  to mass-weighting.
+- Assembly inertia aggregation (ADR 0036): closed-form two-box tensors, mass- and
+  volume-weighted (g·mm² vs mm⁵), the parallel-axis transfer about an off-origin
+  CoM, the omitted-when-a-part-lacks-a-tensor guard, and a real-geometry check
+  against the box closed form.
+- Inertia semantics (ADR 0037): the additive per-part `matrix_of_inertia_semantics`
+  record (units mm⁵, unit-density geometric, part centroid, world axes at placed
+  pose) paired with the unchanged bare-list tensor and absent without a kernel; and
+  the assembly `inertia` block's `units`/`density` fields for both weighting regimes.
+  Note the D-007 trap: `matrix_of_inertia` is unit-density geometric (mm⁵), not a
+  mass moment — the semantics records make this machine-readable.
 - Sheet-metal bends (ADR 0016): `bend()` developed-length arithmetic and flat
   profile, the 90° two-box folded envelope for both up and down directions, the
   non-right-angle rotated solid, input validation, the combined cut+bend DXF

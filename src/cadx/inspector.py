@@ -523,8 +523,14 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
             (volume, center, density, inertia)
             for volume, center, density, inertia in qualifying
         ]
+        # ADR 0037: make the aggregate self-describing. Its units follow the same
+        # weighting decision that produced it — a mass moment in g*mm^2 when every
+        # part had a density, else a unit-density geometric second moment in mm^5
+        # (the inertial analogue of the volume-weighted center of mass).
         assembly["inertia"] = {
             "tensor": _aggregate_inertia(parts, center_of_mass, all_have_density),
+            "units": "g*mm^2" if all_have_density else "mm^5",
+            "density": "mass-weighted" if all_have_density else "unit (geometric)",
             "about": "assembly center of mass",
             "axes": "world",
         }
