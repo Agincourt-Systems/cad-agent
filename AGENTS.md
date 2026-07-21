@@ -4,7 +4,7 @@ The following describe certain mandatory software development practices, to ensh
 
 1. Follow strict red-green Test Driven Design - tests must precede code, and tests must provide feedback both when code is absent (tests must fail), and present (tests must pass). Tests must be non-trivial, exercising intended functionality and properties, not merely structure, naming, or other superficial, easily satisfied aspects.
 
-2. Test coverage must be total, and if not, documented as such, with sufficient rationale to excuse total coverage of all code paths. 
+2. Test coverage must be total, and if not, documented as such, with sufficient rationale to excuse total coverage of all code paths. Do not neglect integration tests.
 
 3. Comment all code thoroughly, sufficient that the codebase might be transferred to another developer who, though competent, is entirely unfamiliar with the software, its rationale, and its history.
 
@@ -26,10 +26,10 @@ The following describe certain mandatory software development practices, to ensh
 
 12. Review these practices reguarly, to keep them in context.
 
-Project Specific:
-
 13. Separate slower regressions into an explicit extended suite rather than placing them on the default fast path.
 
 14. Do not neglect the extended suite: run slower tests in parallel while doing active feature implementation work, but only block on the extended suite after major revisions or before a commit that changes functionality measured by the extended tests.
 
 15. Prefer structured tools (MCP servers, LSP servers, existing utilities, etc.) where possible, when they support a desired behavior. Use ad hoc scripts and function reimplementation only as secondary support when such tools are insufficient, absent, unnecessary overhead for the task at hand, or the specific use case merits additional documentation in the form of custom code.
+
+16. Use ASD-STE100 whenever feasible for planning (plan mode), communication with the user, documentation, markdown documents, etc.
