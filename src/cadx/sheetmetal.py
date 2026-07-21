@@ -21,7 +21,7 @@ single-bend API and all its published behaviour are unchanged.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, degrees, pi, radians, sin
+from math import atan2, cos, degrees, pi, radians, sin
 from typing import Any
 
 
@@ -54,104 +54,93 @@ def _bend_allowance(angle_deg: float, inside_radius: float, k_factor: float, thi
     return (pi / 180.0) * angle_deg * (inside_radius + k_factor * thickness)
 
 
-def _folded_single(
-    flange_a: float,
-    flange_b: float,
-    *,
-    angle_deg: float,
-    thickness: float,
-    width: float,
-    direction: str,
-) -> Any:
-    """Closed-form folded solid for a single bend (ADR 0016), preserved verbatim.
-
-    Keeping this construction exactly as ADR 0016 shipped it means the single-bend
-    envelope and every existing single-bend test are unchanged when ``bend()``
-    delegates to ``bend_chain()``. For a 90-degree bend the envelope is exactly
-    ``(flange_a + thickness, width, flange_b)`` regardless of fold direction; a
-    non-right-angle bend rotates flange B about the bend axis for a representative
-    valid solid.
-    """
-
-    from build123d import Axis, Box, Pos
-
-    fold_sign = 1.0 if direction == "up" else -1.0
-    base = Pos(flange_a / 2.0, 0, thickness / 2.0) * Box(flange_a, width, thickness)
-    if abs(angle_deg - 90.0) < 1e-9:
-        # Exact rectilinear envelope (flange_a + t, width, flange_b) for the
-        # common right-angle bend, independent of fold direction: a standing wall
-        # of thickness t at x in [flange_a, flange_a + t], aligned to the base
-        # bottom (up) or top (down) so the base thickness is absorbed either way
-        # and the Z extent stays flange_b. This trades inside-radius corner
-        # fidelity for a closed-form, predictable envelope.
-        wall_center_z = flange_b / 2.0 if direction == "up" else thickness - flange_b / 2.0
-        wall = Pos(flange_a + thickness / 2.0, 0, wall_center_z) * Box(thickness, width, flange_b)
-    else:
-        # General angle: flange B lies flat past the bend, then rotates up about
-        # the bend axis. The envelope is a representative valid solid rather than
-        # a closed form (no test pins a non-right-angle envelope).
-        wall = Pos(flange_a + flange_b / 2.0, 0, thickness / 2.0) * Box(flange_b, width, thickness)
-        wall = wall.rotate(Axis((flange_a, 0, thickness / 2.0), (0, 1, 0)), fold_sign * angle_deg)
-    return base + wall
-
-
-def _folded_chain(
+def _folded_profile(
     flanges: list[float],
     angles_deg: list[float],
     directions: list[str],
+    radii: list[float],
+    k_factors: list[float],
     *,
     thickness: float,
     width: float,
 ) -> Any:
-    """Connected folded solid for a chain of two or more bends (ADR 0032).
+    """Connected, volume-conserving folded solid for any bend chain (ADR 0034).
 
-    The part is folded in the XZ cross-section plane; every bend axis is parallel
-    to the width (``y``) axis, which matches the U-channel / clevis geometry the
-    deficiency targets. A running "pen" walks the flange chain: it starts at the
-    origin heading ``+x`` and, at each bend, turns its heading by the bend angle
-    (``+`` for ``up``, ``-`` for ``down``). Each flange is a ``Box`` of its outer
-    length rotated so its length points along the current heading.
+    The part is modelled as a **constant-thickness ribbon** swept along its neutral
+    centreline in the XZ cross-section plane, then extruded by ``width`` along
+    ``y``. The centreline is a walk of straight segments (one per flange, of length
+    equal to the flange length) joined by circular arcs (one per bend). Each bend
+    arc has the neutral radius ``rho = inside_radius + k_factor * thickness`` and
+    sweeps the bend angle, turning left for ``up`` and right for ``down`` — so every
+    bend region is a true annular sector and the arc's centreline length is exactly
+    the bend allowance ``BA = radians(angle) * rho``.
 
-    The material thickness is centred on each flange's mid-plane (``z`` in
-    ``[-t/2, t/2]`` before rotation). Centring makes consecutive flanges overlap in
-    a ``t x t`` corner region, so the boolean union is a **single connected solid**
-    — the property the interference / center-of-mass machinery requires — with a
-    sharp outer corner. The envelope is therefore correct to within one material
-    thickness; bend-region material (and exact envelopes) are ADR 0034's concern.
+    Why this conserves volume: ``build123d``'s ``trace(line_width=thickness)`` turns
+    the centreline into a band of constant thickness, and ``extrude(..., width)``
+    sweeps it out. By Pappus's theorem the volume is the ribbon's cross-sectional
+    area times the width, and that area is ``thickness * (sum(flange lengths) +
+    sum(BA)) == thickness * developed_length``. So the folded volume equals the
+    conserved blank volume ``developed_length * thickness * width`` exactly (to
+    numerical tolerance), for a single bend and for a chain alike — the ~4.9%
+    bend-region deficit of the old sharp-corner model (D-005) is removed.
 
-    ``build123d`` rotates ``+x`` toward ``-z`` under a positive rotation about
-    ``+y`` (verified empirically), so a heading angle ``phi`` (measured CCW from
-    ``+x`` toward ``+z``) is realised by rotating the axis-aligned box by
-    ``-degrees(phi)`` about ``+y``.
+    Conserving volume keeps the folded straight runs at their flat lengths, so the
+    arc offsets each downstream flange by the bend radius rather than collapsing it
+    into a sharp corner: the single-bend bounding box becomes
+    ``(flange_a + rho + t/2, width, flange_b + rho + t/2)``. The extrude produces a
+    single face swept along one direction, hence one connected solid.
     """
 
-    from build123d import Axis, Box, Pos
+    from build123d import BuildLine, BuildSketch, CenterArc, Line, Plane, extrude, trace
 
-    px, pz = 0.0, 0.0  # current hinge point in the folded XZ plane
-    phi = 0.0  # current heading angle, CCW from +x toward +z
-    solids: list[Any] = []
+    # Walk the neutral centreline in a 2D (u == x, v == z) frame. The base flange
+    # runs along +x with its lower fibre at z = 0 (centreline at z = t/2), matching
+    # the historical "base sits on z = 0" convention as closely as the rounded model
+    # allows. Segments are collected as explicit endpoints / arc parameters and
+    # replayed into a single BuildLine so consecutive edges share exact endpoints.
+    px, pz = 0.0, thickness / 2.0  # current centreline point
+    phi = 0.0  # heading angle, CCW from +x toward +z
+    segments: list[tuple[str, Any]] = []
     count = len(flanges)
     for index, length in enumerate(flanges):
         heading_x, heading_z = cos(phi), sin(phi)
-        center_x = px + heading_x * length / 2.0
-        center_z = pz + heading_z * length / 2.0
-        # Axis-aligned flange: length along x, width along y, thickness along z
-        # centred on z = 0; then rotate about +y so its length points along phi.
-        box = Pos(center_x, 0, center_z) * Box(length, width, thickness)
-        box = box.rotate(Axis((center_x, 0, center_z), (0, 1, 0)), -degrees(phi))
-        solids.append(box)
-        # Advance the pen to the far end of this flange.
-        px += heading_x * length
-        pz += heading_z * length
-        # Turn the heading for the next flange (no turn after the last flange).
-        if index < count - 1:
-            turn = 1.0 if directions[index] == "up" else -1.0
-            phi += turn * radians(angles_deg[index])
+        end = (px + heading_x * length, pz + heading_z * length)
+        segments.append(("line", ((px, pz), end)))
+        px, pz = end
+        if index >= count - 1:
+            continue
+        rho = radii[index] + k_factors[index] * thickness
+        theta = angles_deg[index]
+        if directions[index] == "up":
+            # Left turn: arc centre is 90 deg CCW of the heading; signed sweep +theta.
+            normal = (-sin(phi), cos(phi))
+            sweep = theta
+        else:
+            # Right turn: arc centre is 90 deg CW of the heading; signed sweep -theta.
+            normal = (sin(phi), -cos(phi))
+            sweep = -theta
+        center = (px + rho * normal[0], pz + rho * normal[1])
+        start_angle = degrees(atan2(pz - center[1], px - center[0]))
+        segments.append(("arc", (center, rho, start_angle, sweep)))
+        # Advance the pen to the arc end and turn the heading.
+        end_angle = radians(start_angle + sweep)
+        px = center[0] + rho * cos(end_angle)
+        pz = center[1] + rho * sin(end_angle)
+        phi += radians(sweep)
 
-    folded = solids[0]
-    for solid in solids[1:]:
-        folded = folded + solid
-    return folded
+    # Build the ribbon on the XZ plane so the extrude runs along +y (the width),
+    # giving a bounding box of (x-extent, width, z-extent).
+    with BuildSketch(Plane.XZ) as sketch:
+        with BuildLine():
+            for kind, data in segments:
+                if kind == "line":
+                    start, end = data
+                    Line(start, end)
+                else:
+                    center, rho, start_angle, sweep = data
+                    CenterArc(center, rho, start_angle, sweep)
+        trace(line_width=thickness)
+    return extrude(sketch.sketch, width)
 
 
 def bend_chain(
@@ -172,9 +161,8 @@ def bend_chain(
     so the shared web of a U-channel is counted exactly once (never the per-pair
     double-count the deficiency flags). Bend ``j`` sits at developed position
     ``sum(flanges[0..j]) + sum(BA[0..j-1]) + BA_j/2`` — the centreline of its bend
-    region — and spans the full width. The folded solid is a single connected
-    solid: the closed-form single-bend construction for one bend, or a rigid-fold
-    walk for two or more.
+    region — and spans the full width. The folded solid is a single connected,
+    volume-conserving swept ribbon (:func:`_folded_profile`, ADR 0034).
     """
 
     if width <= 0 or thickness <= 0:
@@ -190,6 +178,8 @@ def bend_chain(
 
     angles_deg: list[float] = []
     directions: list[str] = []
+    radii: list[float] = []
+    k_factors: list[float] = []
     allowances: list[float] = []
     for spec in bends:
         direction = spec.get("direction", "up")
@@ -200,6 +190,8 @@ def bend_chain(
         k_factor = float(spec["k_factor"])
         angles_deg.append(angle_deg)
         directions.append(direction)
+        radii.append(inside_radius)
+        k_factors.append(k_factor)
         allowances.append(_bend_allowance(angle_deg, inside_radius, k_factor, thickness))
 
     developed_length = sum(flanges) + sum(allowances)
@@ -232,23 +224,15 @@ def bend_chain(
             }
         )
 
-    if len(flanges) == 2:
-        folded = _folded_single(
-            flanges[0],
-            flanges[1],
-            angle_deg=angles_deg[0],
-            thickness=thickness,
-            width=width,
-            direction=directions[0],
-        )
-    else:
-        folded = _folded_chain(
-            flanges,
-            angles_deg,
-            directions,
-            thickness=thickness,
-            width=width,
-        )
+    folded = _folded_profile(
+        flanges,
+        angles_deg,
+        directions,
+        radii,
+        k_factors,
+        thickness=thickness,
+        width=width,
+    )
 
     return SheetMetalPart(
         developed_length=developed_length,

@@ -35,6 +35,16 @@ ANGLE_DEG = 90.0
 EXPECTED_BA = (math.pi / 180.0) * ANGLE_DEG * (INSIDE_RADIUS + K_FACTOR * THICKNESS)
 EXPECTED_DEVELOPED_LENGTH = FLANGE_A + EXPECTED_BA + FLANGE_B
 
+# ADR 0034: the folded solid is a swept constant-thickness ribbon whose bend
+# region is an annular sector of neutral radius rho = R + K*t. Conserving the
+# blank volume keeps the straight flange runs at their flat lengths, so the
+# 90 deg-bend bounding box grows at the corner to
+# (flange_a + rho + t/2, width, flange_b + rho + t/2).
+EXPECTED_RHO = INSIDE_RADIUS + K_FACTOR * THICKNESS
+EXPECTED_ENV_X = FLANGE_A + EXPECTED_RHO + THICKNESS / 2.0
+EXPECTED_ENV_Z = FLANGE_B + EXPECTED_RHO + THICKNESS / 2.0
+EXPECTED_BLANK_VOLUME = EXPECTED_DEVELOPED_LENGTH * THICKNESS * WIDTH
+
 
 def run_cadx(tmp_path: Path, *args: str) -> subprocess.CompletedProcess:
     """Run cadx through the same subprocess path agents use."""
@@ -136,13 +146,15 @@ def test_bend_line_layer(tmp_path):
     assert bend_entity.dxf.start.x == pytest.approx(expected_x, abs=1e-3)
     assert bend_entity.dxf.end.x == pytest.approx(expected_x, abs=1e-3)
 
-    # Folded 3D envelope: base flange + standing wall.
+    # Folded 3D envelope (ADR 0034): swept ribbon with a rounded bend corner. The
+    # extents grow at the corner by the bend geometry (rho + t/2); the straight
+    # flange runs are still flange_a / flange_b.
     spatial = json.loads((run_dir / "spatial.json").read_text(encoding="utf-8"))
     bracket = next(obj for obj in spatial["objects"] if obj["label"] == "bracket")
     size = bracket["bbox"]["size"]
-    assert size[0] == pytest.approx(FLANGE_A + THICKNESS, abs=1e-3)
+    assert size[0] == pytest.approx(EXPECTED_ENV_X, abs=1e-3)
     assert size[1] == pytest.approx(WIDTH, abs=1e-3)
-    assert size[2] == pytest.approx(FLANGE_B, abs=1e-3)
+    assert size[2] == pytest.approx(EXPECTED_ENV_Z, abs=1e-3)
 
 
 def test_bend_table_emitted(tmp_path):
@@ -254,7 +266,7 @@ def test_bend_check_missing_table_fails(tmp_path):
 
 
 def test_down_bend_envelope_matches_up(tmp_path):
-    """A 90 down bend has the same closed-form envelope as an up bend."""
+    """A 90 down bend has the same (mirror-symmetric) envelope size as an up bend."""
 
     from cadx.sheetmetal import bend
 
@@ -263,9 +275,11 @@ def test_down_bend_envelope_matches_up(tmp_path):
         k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="down",
     )
     size = down.folded.bounding_box().size
-    assert size.X == pytest.approx(FLANGE_A + THICKNESS, abs=1e-3)
+    # ADR 0034 swept-ribbon envelope; a down fold mirrors the up fold, so the
+    # bounding-box SIZE is identical.
+    assert size.X == pytest.approx(EXPECTED_ENV_X, abs=1e-3)
     assert size.Y == pytest.approx(WIDTH, abs=1e-3)
-    assert size.Z == pytest.approx(FLANGE_B, abs=1e-3)  # not flange_b + thickness
+    assert size.Z == pytest.approx(EXPECTED_ENV_Z, abs=1e-3)
 
 
 def test_two_sheet_metal_parts_share_one_bend_table(tmp_path):
@@ -381,7 +395,8 @@ def test_uchannel_single_blank():
 
 
 def test_bend_delegates_to_chain():
-    """bend() is unchanged: same developed length, one bend line, same envelope."""
+    """bend() is unchanged in its flat-pattern contract; its folded solid is the
+    ADR 0034 swept-ribbon envelope."""
 
     from cadx.sheetmetal import bend
 
@@ -399,9 +414,40 @@ def test_bend_delegates_to_chain():
     assert len(part.bend_lines) == 1
     assert len(part.bends) == 1
     size = part.folded.bounding_box().size
-    assert size.X == pytest.approx(FLANGE_A + THICKNESS, abs=1e-3)
+    assert size.X == pytest.approx(EXPECTED_ENV_X, abs=1e-3)
     assert size.Y == pytest.approx(WIDTH, abs=1e-3)
-    assert size.Z == pytest.approx(FLANGE_B, abs=1e-3)
+    assert size.Z == pytest.approx(EXPECTED_ENV_Z, abs=1e-3)
+
+
+# --- ADR 0034: bend-region volume via a swept ribbon (D-005) ------------------
+
+
+def test_folded_volume_matches_blank():
+    """The folded solid conserves the blank volume (developed_length * t * width),
+    within a tight tolerance. The old two-box model was ~4.9% low."""
+
+    from cadx.sheetmetal import bend
+
+    # The deficiency's exact case: 40/60 flanges, width 30, t=R=2.29, K=0.44.
+    thickness = 2.29
+    part = bend(
+        40.0, 60.0, angle_deg=90.0, inside_radius=2.29, k_factor=0.44,
+        thickness=thickness, width=30.0, direction="up",
+    )
+    blank_volume = part.developed_length * thickness * 30.0
+    assert blank_volume == pytest.approx(7225.86, abs=0.1)
+    assert part.folded.volume == pytest.approx(blank_volume, rel=1e-4)
+    # Sanity: it is materially larger than the old sharp-corner 6870 mm^3.
+    assert part.folded.volume > 7000.0
+
+
+def test_chain_folded_volume_matches_blank():
+    """A multi-bend chain also conserves its blank volume and stays one solid."""
+
+    part = _uchannel()
+    blank_volume = part.developed_length * UCHAN_THICKNESS * UCHAN_WIDTH
+    assert part.folded.volume == pytest.approx(blank_volume, rel=1e-4)
+    assert len(part.folded.solids()) == 1
 
 
 def test_bend_chain_validates_lengths():
