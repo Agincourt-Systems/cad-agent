@@ -14,6 +14,7 @@ from typing import Any
 
 from cadx.files import load_yaml, write_json
 from cadx.runner import (
+    _apply_link_frame_inertia_mass,
     _apply_material_density,
     _auto_export_flats,
     _execute_design,
@@ -78,6 +79,11 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
         # material that did not resolve (and had no explicit density); fold them
         # into the run's warnings channel so a gate can assert on them.
         material_warnings = _apply_material_density(published, raw_registry.get("part_meta", []))
+        # ADR 0047 (D-017): once densities are resolved, emit the mass-scaled
+        # link-frame inertia tensor beside the unit-density one. A separate pass
+        # so density resolution and the derived mass tensor stay decoupled; a
+        # run with no material is left byte-for-byte unchanged.
+        _apply_link_frame_inertia_mass(published)
         exports: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = list(mate_warnings)
         warnings.extend(material_warnings)

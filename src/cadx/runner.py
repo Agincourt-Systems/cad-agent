@@ -70,7 +70,66 @@ def _count_selector(obj: Any, name: str) -> int | None:
         return None
 
 
-def _mass_properties(obj: Any) -> dict[str, Any]:
+def _placement_rotation(placement: Any) -> list[list[float]] | None:
+    """Return the 3x3 body→world rotation matrix ``R`` of a placement, or ``None``.
+
+    The columns of ``R`` are the part's local unit basis vectors expressed in
+    world coordinates. It is derived from the placement's orientation with
+    build123d itself — a rotation-only ``Location((0,0,0), orientation)`` maps
+    each local basis vector to its world image — so the Euler-XYZ-degrees
+    convention (ADR 0014) can never drift from an independent hand-rolled matrix.
+
+    Returns ``None`` when there is no usable rotation (a missing placement, a
+    synthetic translation-only placement, or a build123d import failure); the
+    caller then treats the rotation as identity. Used by ADR 0047 to rotate the
+    world-axes inertia tensor back into the part's link (body) frame.
+    """
+
+    if placement is None:
+        return None
+    orientation = getattr(placement, "orientation", None)
+    if orientation is None:
+        # Synthetic dict/sequence placements are translation-only by design, so
+        # there is no rotation to recover.
+        return None
+    try:
+        from build123d import Location
+
+        rotation = Location((0.0, 0.0, 0.0), orientation)
+        # Column j is the world image of local unit axis j (origin is the zero
+        # translation of ``rotation``, so no subtraction is needed).
+        columns = []
+        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)):
+            image = (rotation * Location(axis)).position
+            columns.append([float(image.X), float(image.Y), float(image.Z)])
+        # R[i][j] = column j's i-th component.
+        return [[columns[j][i] for j in range(3)] for i in range(3)]
+    except Exception:
+        return None
+
+
+def _rotate_inertia_to_body(tensor: list[list[float]], rotation: list[list[float]] | None) -> list[list[float]]:
+    """Rotate a world-axes inertia tensor into the link (body) frame: ``Rᵀ·I·R``.
+
+    ``matrix_of_inertia`` is computed on the *placed* object, so it equals
+    ``R·I_body·Rᵀ`` (about the centroid, where a pure rotation ``R`` acts).
+    Inverting that rotation with ``Rᵀ·I·R`` recovers the body-frame tensor, whose
+    pose-induced off-diagonals vanish and which is translation-invariant (both
+    tensors are about the centroid). With ``rotation is None`` (identity
+    placement) the result equals the input exactly.
+    """
+
+    if rotation is None:
+        return [row[:] for row in tensor]
+    transposed = [[rotation[j][i] for j in range(3)] for i in range(3)]  # Rᵀ
+
+    def _matmul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+        return [[sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+
+    return _matmul(_matmul(transposed, tensor), rotation)
+
+
+def _mass_properties(obj: Any, placement: Any = None) -> dict[str, Any]:
     """Compute JSON-safe mass properties for a real build123d solid.
 
     ``volume`` and ``area`` are always attempted; ``center_of_mass`` and
@@ -78,6 +137,11 @@ def _mass_properties(obj: Any) -> dict[str, Any]:
     part centroid in model units) are added when available. Each addition is
     guarded so a shape that cannot produce one — or a kernel-free environment —
     simply omits the key rather than failing the run.
+
+    ``placement`` is the part's assembly placement (a build123d ``Location`` or
+    ``None`` for a root); it is used only by ADR 0047 to rotate the world-axes
+    inertia tensor into the link (body) frame. Defaulting it to ``None`` keeps
+    the ADR 0015/0037 call signature (``_mass_properties(obj)``) working.
     """
 
     properties: dict[str, Any] = {
@@ -91,7 +155,8 @@ def _mass_properties(obj: Any) -> dict[str, Any]:
     except Exception:
         pass
     try:
-        properties["matrix_of_inertia"] = [[float(component) for component in row] for row in obj.matrix_of_inertia]
+        tensor = [[float(component) for component in row] for row in obj.matrix_of_inertia]
+        properties["matrix_of_inertia"] = tensor
         # ADR 0037: describe the tensor so a consumer never has to infer the
         # D-007 unit trap. build123d's matrix_of_inertia is a UNIT-DENSITY
         # geometric second moment in mm^5 (density never applied), taken about
@@ -105,6 +170,20 @@ def _mass_properties(obj: Any) -> dict[str, Any]:
             "density": "unit (geometric)",
             "about": "part centroid",
             "axes": "world at placed pose",
+        }
+        # ADR 0047 (D-017): also emit the tensor rotated into the part's link
+        # (body) frame (``Rᵀ·I·R``), so a URDF consumer needs no manual
+        # inverse-placement rotation. Still unit-density mm^5 about the centroid;
+        # only the axes differ. Emitted under the same guard as the world tensor,
+        # so a consumer gets the tensor and its declared frame together or not at
+        # all. The mass-scaled variant is added later by
+        # ``_apply_link_frame_inertia_mass`` once a density resolves.
+        properties["inertia_link_frame"] = _rotate_inertia_to_body(tensor, _placement_rotation(placement))
+        properties["inertia_link_frame_semantics"] = {
+            "units": "mm^5",
+            "density": "unit (geometric)",
+            "about": "part centroid",
+            "axes": "link (body) frame",
         }
     except Exception:
         pass
@@ -474,7 +553,7 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
         bbox = _normalize_bbox(bbox_method() if callable(bbox_method) else getattr(placed, "bbox", {}))
         normalized = {
             "bbox": bbox,
-            "mass_properties": _mass_properties(placed),
+            "mass_properties": _mass_properties(placed, placement),
             "topology": {
                 "solids": _count_selector(placed, "solids"),
                 "faces": _count_selector(placed, "faces"),
@@ -629,6 +708,45 @@ def _apply_material_density(
                     mass_properties["mass"] = float(volume) * density
 
     return warnings
+
+
+def _apply_link_frame_inertia_mass(published: list[dict[str, Any]]) -> None:
+    """Emit the mass-scaled link-frame inertia tensor when a density resolved (ADR 0047).
+
+    Runs *after* ``_apply_material_density`` (which owns density resolution), so
+    it can read the resolved ``metadata.density`` and the unit-density
+    ``mass_properties.inertia_link_frame`` that ``_mass_properties`` produced, and
+    combine them:
+
+        inertia_link_frame_mass[g·mm²] = density[g/mm³] · inertia_link_frame[mm⁵]
+
+    Kept a separate pass (not folded into ``_apply_material_density``) so the two
+    concerns stay independent and a run that declares no material is byte-for-byte
+    unchanged: with no resolved density this pass writes nothing, exactly as a
+    density-free run already carries no ``mass``. The mate/placement geometry is
+    untouched — this is purely additive per-part serialization.
+    """
+
+    for record in published:
+        metadata = record.get("metadata") or {}
+        density = metadata.get("density")
+        mass_properties = record.get("mass_properties")
+        if not isinstance(density, (int, float)) or density <= 0:
+            continue
+        if not isinstance(mass_properties, dict):
+            continue
+        link_frame = mass_properties.get("inertia_link_frame")
+        if not isinstance(link_frame, list):
+            continue
+        mass_properties["inertia_link_frame_mass"] = [
+            [float(density) * float(component) for component in row] for row in link_frame
+        ]
+        mass_properties["inertia_link_frame_mass_semantics"] = {
+            "units": "g*mm^2",
+            "density": "mass-weighted",
+            "about": "part centroid",
+            "axes": "link (body) frame",
+        }
 
 
 def _export_build123d_object(entry: dict[str, Any], run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
