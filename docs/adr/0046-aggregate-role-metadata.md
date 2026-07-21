@@ -146,4 +146,34 @@ says so.
 
 ## After Action Report
 
-_To be completed after implementation._
+The red state failed as predicted: the assembly record had no `included_roles` /
+`excluded` keys (KeyError) and `_assembly_center_of_mass` rejected the
+`include_roles` keyword (TypeError) — all 6 new tests failed before the change.
+
+Both parts landed as designed. Part 1 (self-description) fell out of the existing
+qualifying loop: the role check now records a `{label, role}` entry on the *role*
+branch before `continue`, while the missing-data skip below it deliberately
+records nothing — so `excluded` answers precisely "what did the role rule remove?"
+and `test_excluded_omits_non_role_skips` pins that a volumeless part is a data
+skip, not a role exclusion. Part 2 (opt-in) reduced to a one-line set difference
+`excluded_roles = _NON_PHYSICAL_ROLES - opted_in`; because the opted-in role then
+flows through the same qualifying list, mass, CoM, and the ADR 0036 inertia tensor
+all pick it up with no extra code, which `test_include_roles_extends_inertia`
+verifies against the three-box closed form.
+
+The chosen plumbing — a run-level `assembly_options` registry declaration
+persisted into `diagnostics.json` — proved to be the right seam: `inspect_run`
+reads it from disk, so the opt-in works identically for a fresh `cadx run` and a
+later `cadx inspect`, and the CLI needed no new argument. Writing the diagnostics
+key only when non-empty kept every option-free run byte-identical, so no existing
+diagnostics-shape test moved.
+
+Schema pins: no existing test asserted the full assembly key set, so none broke;
+the new `test_default_assembly_block_adds_only_metadata_keys` pins the exact set
+(the pre-ADR four keys plus `included_roles`/`excluded`) and was added in the same
+commit as the feature, as ADR discipline requires.
+
+No design changes were needed during implementation. All 6 new tests pass; the
+existing ADR 0015/0035/0036 assembly, center-of-mass, and inertia tests remain
+green. Full suite: 212 passed (201 prior + 5 for ADR 0045 + 6 for ADR 0046), no
+regressions.
