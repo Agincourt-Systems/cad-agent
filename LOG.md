@@ -360,3 +360,56 @@ client execution tests (12); apexmesh-client optional lazy import;
 republish refuses without --force; 409 revision conflicts reuse the
 existing revision. Suite 154 → 166 green. Live end-to-end validation rides
 apexmesh ADR-0018 (chupacabra backfill).
+
+
+## 2026-07-21 — ADRs 0030–0039: downstream arm deficiency fixes (D-001…D-015)
+
+The downstream robot-arm project's Phase-0 capability probe filed 15
+deficiencies against cadx (`docs/specs/arm-deficiencies.md`, committed today
+with the docs/specs/ restructure). All fixable items shipped as ten ADRs in
+four parallel tracks, each implemented by an Opus subagent in an isolated
+worktree (ADR-first red-green TDD, stacked `opus/adr-NNNN-*` branches),
+reviewed by Fable, rebased onto master in sequence, full suite green at
+every merge gate:
+
+- **Packaging/CLI (0030–0031)**: capped `build123d>=0.10,<0.11` (0.11 makes
+  interference silently pass on overlaps and crashes assembly render —
+  D-001; adoption of 0.11 deferred to a future ADR), declared `ezdxf` in the
+  test extra (D-002); top-level CLI handler turns escaped exceptions into
+  `{"status":"error"}` JSON on stdout + traceback on stderr + exit 1
+  (D-010); README now documents the real `--artifact-root` layout, implicit
+  inspect-in-run, and the variable export set (D-011/012/015). Review fix by
+  Fable: the new packaging guard tests' own imports (`packaging`, `tomli`)
+  declared in the test extra — the same D-002 class they guard against.
+- **Sheet metal (0032–0034)**: `bend_chain()` generalizes `bend()` to
+  ordered flange/bend chains — U-channel/clevis parts are now ONE blank with
+  N bend lines and no double-counted web (D-003); `publish_sheet_metal`
+  emits each bend as a `kind="bend"` spatial feature so the
+  `min_bend_radius`/`hole_to_bend` DFM rules finally bind on the real bend
+  flow (D-004); the folded solid is now a constant-thickness ribbon swept
+  along the neutral centreline (straights + annular sectors at rho =
+  R + K·t), so folded volume equals the conserved blank volume exactly by
+  Pappus — the ~4.9% bend-region deficit is gone (D-005).
+- **Mass properties (0035–0037)**: new `cadx.density` material→density
+  table (g/mm³, whole-token matching so "plastic" never resolves to "PLA");
+  a declared known material now implies density and per-part
+  `mass_properties.mass`, with `density_source` provenance and explicit
+  `density=` always winning (D-008); `spatial["assembly"]` gains an
+  `inertia` block — parallel-axis aggregate about the assembly CoM, g·mm²
+  when every part has density, mm⁵ geometric otherwise, mirroring the CoM
+  `weighting` degradation (D-006); every `matrix_of_inertia` now carries a
+  sibling `matrix_of_inertia_semantics` record naming the mm⁵/unit-density/
+  world-axes/about-centroid trap instead of leaving it implicit (D-007).
+- **Kinematics/exports (0038–0039)**: resolved mates now export their
+  defining `anchor`/`target` frames, world-frame joint `axis` (kinematic
+  kinds), and zero-pose `origin` (`parent * target * anchor⁻¹`) so a URDF
+  generator needs no side-channel record (D-013); root/unmated parts get an
+  explicit identity placement while declared-but-unresolved mates keep the
+  absence signal (D-014); the `parametric` check accepts opt-in
+  `fail_on_range_violation` turning `mate_out_of_range` warnings into set
+  failures (D-009).
+
+Suite 166 → 201 green (+35 tests). Not addressed by design: D-005 mass
+correction workaround is superseded by the real fix; the D-001 build123d
+0.11 API adoption is a recorded follow-up ADR. All ten feature branches
+preserved and pushed.
