@@ -557,7 +557,9 @@ def _aggregate_inertia(
     return tensor
 
 
-def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _assembly_center_of_mass(
+    objects: list[dict[str, Any]], include_roles: list[str] | None = None
+) -> dict[str, Any] | None:
     """Mass-weighted center of mass (and inertia) across published part objects.
 
     Each contributing part needs a positive ``mass_properties.volume`` and a
@@ -575,27 +577,53 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
     ``inertia`` block is emitted only when *every* qualifying part exposes a valid
     3x3 ``matrix_of_inertia`` — otherwise the aggregate would omit a part's spin
     term and under-report, so it is dropped rather than published wrong.
+
+    ADR 0046 (deficiency D-026) makes the aggregate self-describing and
+    overridable. ``include_roles`` names roles that are normally non-physical
+    (``_NON_PHYSICAL_ROLES``) but should be counted for this run — an opted-in
+    ``fixture`` then flows through the *same* qualifying list, so mass, center of
+    mass, and inertia all reflect it consistently. The returned record gains
+    ``included_roles`` (sorted distinct roles that contributed) and ``excluded``
+    (one ``{label, role}`` per object dropped *by the role filter*, in publication
+    order); a part skipped for missing volume/centroid is a data skip, not a role
+    exclusion, so it is deliberately absent from ``excluded``.
     """
 
+    # Roles the caller opted back in (ADR 0046): the still-excluded set is the
+    # default non-physical set minus anything explicitly requested. A role not in
+    # the non-physical set (e.g. "part") is a harmless no-op here.
+    opted_in = set(include_roles or ())
+    excluded_roles = _NON_PHYSICAL_ROLES - opted_in
+
     # First pass: collect qualifying parts with their volume, centroid, any
-    # positive density, and their (optional) geometric inertia tensor.
+    # positive density, and their (optional) geometric inertia tensor. Track the
+    # roles that contributed and the objects the role filter dropped, so the
+    # aggregate can describe itself.
     qualifying: list[tuple[float, list[float], float | None, list[list[float]] | None]] = []
+    included_role_set: set[str] = set()
+    excluded: list[dict[str, Any]] = []
     for obj in objects:
         # Aggregate every physical part. The primary part is idiomatically
         # published as role="final" (the starter design and most assemblies do),
         # so excluding all non-"part" roles would silently drop the heaviest part
         # from the assembly center of mass and skew a stability/load-cell check.
-        if obj.get("role", "part") in _NON_PHYSICAL_ROLES:
+        role = obj.get("role", "part")
+        if role in excluded_roles:
+            # A role exclusion is a deliberate, reportable drop (D-026).
+            excluded.append({"label": obj.get("label"), "role": role})
             continue
         mass_properties = obj.get("mass_properties", {})
         volume = mass_properties.get("volume")
         center = _coerce_point(mass_properties.get("center_of_mass"))
         if not isinstance(volume, (int, float)) or volume <= 0 or center is None:
+            # A data skip (no volume/centroid) is NOT a role exclusion, so it is
+            # not recorded in ``excluded``.
             continue
         density = obj.get("metadata", {}).get("density")
         density = float(density) if isinstance(density, (int, float)) and density > 0 else None
         inertia = _coerce_matrix(mass_properties.get("matrix_of_inertia"))
         qualifying.append((float(volume), center, density, inertia))
+        included_role_set.add(role)
 
     if not qualifying:
         return None
@@ -620,7 +648,15 @@ def _assembly_center_of_mass(objects: list[dict[str, Any]]) -> dict[str, Any] | 
         "center_of_mass": center_of_mass,
         "mass": total,
         "weighting": "mass" if all_have_density else "volume",
+        # part_count is the number of INCLUDED contributing parts (ADR 0046 makes
+        # this unambiguous alongside included_roles/excluded).
         "part_count": len(contributions),
+        # ADR 0046 (D-026): make the aggregate self-describing. included_roles is
+        # the sorted distinct roles that actually contributed; excluded lists every
+        # object the role filter dropped ({label, role}), so a stability/CoM check
+        # can see at a glance what mass it is (and is not) validating.
+        "included_roles": sorted(included_role_set),
+        "excluded": excluded,
     }
 
     # ADR 0036: aggregate inertia only when every qualifying part carries a valid
@@ -661,7 +697,11 @@ def inspect_run(run_dir: Path) -> dict[str, Any]:
     # spatial.json; the key is additive and only present when something failed.
     if detection_warnings:
         spatial["warnings"] = detection_warnings
-    assembly = _assembly_center_of_mass(objects)
+    # ADR 0046: run-level assembly options (persisted into diagnostics by the
+    # worker) let a design opt a normally non-physical role into the aggregate.
+    assembly_opts = diagnostics.get("assembly_options") or {}
+    include_roles = assembly_opts.get("include_roles")
+    assembly = _assembly_center_of_mass(objects, include_roles=include_roles)
     if assembly is not None:
         spatial["assembly"] = assembly
     write_json(run_dir / "spatial.json", spatial)

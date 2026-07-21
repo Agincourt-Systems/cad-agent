@@ -133,6 +133,12 @@ def execute_worker(source_path: Path, run_dir: Path) -> int:
             "warnings": warnings,
             "exports": exports,
         }
+        # ADR 0046: persist run-level assembly options so inspect_run reads them
+        # whether it runs now or later via `cadx inspect`. Written only when the
+        # design declared some, so a run without them stays byte-identical.
+        assembly_opts = raw_registry.get("assembly_options") or {}
+        if assembly_opts:
+            diagnostics["assembly_options"] = assembly_opts
         write_json(run_dir / "diagnostics.json", diagnostics)
 
         from cadx.inspector import inspect_run

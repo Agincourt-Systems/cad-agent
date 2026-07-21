@@ -8,6 +8,7 @@ which keeps tests and synthetic examples lightweight.
 """
 
 from cadx.registry import (
+    assembly_options,
     clear_registry,
     mate,
     publish,
@@ -19,6 +20,7 @@ from cadx.registry import (
 )
 
 __all__ = [
+    "assembly_options",
     "clear_registry",
     "mate",
     "publish",

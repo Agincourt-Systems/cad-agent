@@ -16,6 +16,9 @@ _PUBLISHED: list[dict[str, Any]] = []
 _FEATURES: list[dict[str, Any]] = []
 _FLATS: list[dict[str, Any]] = []
 _PART_META: list[dict[str, Any]] = []
+# Run-level assembly aggregation options (ADR 0046). Assembly-scoped rather than
+# per-part, so it lives here as one dict rather than on any published entry.
+_ASSEMBLY_OPTIONS: dict[str, Any] = {}
 
 
 def clear_registry() -> None:
@@ -25,6 +28,27 @@ def clear_registry() -> None:
     _FEATURES.clear()
     _FLATS.clear()
     _PART_META.clear()
+    _ASSEMBLY_OPTIONS.clear()
+
+
+def assembly_options(*, include_roles: list[str] | None = None) -> None:
+    """Declare run-level options for the assembly mass/CoM/inertia aggregate (ADR 0046).
+
+    ``include_roles`` lists roles that are normally *non-physical* (``fixture``,
+    ``reference``, ``datum``, ``keepout``) but should nonetheless be counted in
+    the assembly aggregate for this run — e.g. a permanently-mounted counterweight
+    modeled as a ``fixture``. Because the choice is a property of the whole
+    assembly, not of one part, it is declared once here rather than per ``publish``.
+
+    The option is assembly-scoped and persisted into ``diagnostics.json`` by the
+    worker, so ``inspect_run`` reads it whether it runs right after the design or
+    later via ``cadx inspect``. Calling again replaces the prior value; the roles
+    are normalized to a plain list of strings so the record is JSON-safe.
+    """
+
+    _ASSEMBLY_OPTIONS.clear()
+    if include_roles is not None:
+        _ASSEMBLY_OPTIONS["include_roles"] = [str(role) for role in include_roles]
 
 
 # Pose variables each mate kind accepts (ADR 0025). The joint axis is the
@@ -381,4 +405,6 @@ def snapshot_registry() -> dict[str, Any]:
         "features": deepcopy(_FEATURES),
         "flats": flats,
         "part_meta": deepcopy(_PART_META),
+        # Run-level assembly options (ADR 0046); empty when the design declared none.
+        "assembly_options": deepcopy(_ASSEMBLY_OPTIONS),
     }
