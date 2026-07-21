@@ -20,7 +20,7 @@ single-bend API and all its published behaviour are unchanged.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import atan2, cos, degrees, pi, radians, sin
 from typing import Any
 
@@ -30,10 +30,14 @@ class SheetMetalPart:
     """A sheet-metal part: folded solid, flat pattern, and bend table.
 
     ``folded`` is a build123d ``Part`` suitable for ``publish_sheet_metal``;
-    ``flat_profile`` is a build123d ``Sketch`` (the single cut outline);
-    ``bend_lines`` are the build123d ``Edge`` objects drawn on the DXF ``bend``
-    layer (one per bend); and ``bends`` is the JSON-safe bend table written to
-    ``bends.json`` (one row per bend).
+    ``flat_profile`` is a build123d ``Sketch`` (the single cut outline, with any
+    holes/cutouts subtracted as inner wires); ``bend_lines`` are the build123d
+    ``Edge`` objects drawn on the DXF ``bend`` layer (one per bend); ``bends`` is
+    the JSON-safe bend table written to ``bends.json`` (one row per bend); and
+    ``holes`` is the JSON-safe list of flat-pattern holes/cutouts (ADR 0040) that
+    ``publish_sheet_metal`` republishes as ``spatial.json`` features so the DFM
+    rules bind. ``holes`` defaults to empty, so a part with no holes is identical
+    to a pre-ADR-0040 part.
     """
 
     developed_length: float
@@ -41,6 +45,7 @@ class SheetMetalPart:
     flat_profile: Any
     bend_lines: list[Any]
     bends: list[dict[str, Any]]
+    holes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _bend_allowance(angle_deg: float, inside_radius: float, k_factor: float, thickness: float) -> float:
@@ -63,6 +68,7 @@ def _folded_profile(
     *,
     thickness: float,
     width: float,
+    holes: list[dict[str, Any]] | None = None,
 ) -> Any:
     """Connected, volume-conserving folded solid for any bend chain (ADR 0034).
 
@@ -98,11 +104,17 @@ def _folded_profile(
     # the historical "base sits on z = 0" convention as closely as the rounded model
     # allows. Segments are collected as explicit endpoints / arc parameters and
     # replayed into a single BuildLine so consecutive edges share exact endpoints.
+    #
+    # ADR 0040: record each flange's straight-run start point and heading so a
+    # flange-local hole (flange index + along/across offsets) can be located on
+    # the folded mid-surface for a clean boolean subtraction.
     px, pz = 0.0, thickness / 2.0  # current centreline point
     phi = 0.0  # heading angle, CCW from +x toward +z
     segments: list[tuple[str, Any]] = []
+    flange_frames: list[tuple[float, float, float]] = []
     count = len(flanges)
     for index, length in enumerate(flanges):
+        flange_frames.append((px, pz, phi))  # centreline start + heading of this flange
         heading_x, heading_z = cos(phi), sin(phi)
         end = (px + heading_x * length, pz + heading_z * length)
         segments.append(("line", ((px, pz), end)))
@@ -140,7 +152,139 @@ def _folded_profile(
                     center, rho, start_angle, sweep = data
                     CenterArc(center, rho, start_angle, sweep)
         trace(line_width=thickness)
-    return extrude(sketch.sketch, width)
+    solid = extrude(sketch.sketch, width)
+
+    # ADR 0040: subtract each flange-local hole/cutout from the folded solid so
+    # mass / volume / render agree with the fabricated blank. The extrude runs
+    # along -y (Plane.XZ normal), so the folded strip spans y in [-width, 0]; the
+    # width centreline (v = 0) therefore maps to y = -width/2. Each hole sits on
+    # its flange's mid-surface at the recorded start point advanced ``u`` along the
+    # heading, and pierces along the flange surface normal (-sin phi, 0, cos phi).
+    # Because the hole lies wholly within the flat flange (bend-crossing is
+    # rejected in ``bend_chain``), a cylinder/box of depth 3*t removes exactly the
+    # prism ``area * t`` — the basis of ADR 0040's volume identity.
+    for hole in holes or []:
+        solid = _subtract_hole(solid, hole, flange_frames, thickness=thickness, width=width)
+    return solid
+
+
+def _subtract_hole(
+    solid: Any,
+    hole: dict[str, Any],
+    flange_frames: list[tuple[float, float, float]],
+    *,
+    thickness: float,
+    width: float,
+) -> Any:
+    """Cut one flat-pattern hole out of the folded solid at its flange's 3-D pose.
+
+    ``hole`` carries its flange index and in-flange ``u`` (along the flange from
+    the leading edge) / ``v`` (across the width from the centreline) offsets, plus
+    the primitive (a round hole with ``diameter`` or a rectangular cutout with
+    ``length``/``width``). The cutter is oriented by the flange's heading so it
+    pierces perpendicular to the flange face.
+    """
+
+    from build123d import Box, Cylinder, Plane
+
+    sx, sz, phi = flange_frames[hole["flange"]]
+    heading = (cos(phi), 0.0, sin(phi))
+    normal = (-sin(phi), 0.0, cos(phi))
+    origin = (sx + hole["u"] * cos(phi), hole["v"] - width / 2.0, sz + hole["u"] * sin(phi))
+    plane = Plane(origin=origin, x_dir=heading, z_dir=normal)
+    depth = thickness * 3.0  # over-length so the cutter fully clears both faces
+    if hole["kind"] == "cylindrical_hole":
+        cutter = plane * Cylinder(radius=hole["diameter"] / 2.0, height=depth)
+    else:  # rectangular cutout: length along the flange (u), width across (v)
+        cutter = plane * Box(hole["length"], hole["width"], depth)
+    return solid - cutter
+
+
+def _resolve_holes(
+    holes: list[dict[str, Any]] | None,
+    flanges: list[float],
+    flange_starts: list[float],
+    bend_regions: list[tuple[float, float]],
+    *,
+    developed_length: float,
+    width: float,
+) -> list[dict[str, Any]]:
+    """Validate and unfold flange-local holes into developed-blank coordinates.
+
+    ADR 0040. Each ``hole`` is ``{"flange": j, "u": <along>, "v": <across>, ...}``
+    where ``u`` runs from flange ``j``'s leading edge (its smaller developed x) and
+    ``v`` from the width centreline. A round hole carries ``diameter``; a
+    rectangular cutout carries ``length`` (along ``u``) and ``width`` (across
+    ``v``). The developed centre is ``[flange_starts[j] + u, v, 0]``.
+
+    Two hard guards keep the flat and folded geometry in agreement. A hole whose
+    developed extent overlaps any bend-allowance region would wrap the radius when
+    folded (its removed volume would not be a clean prism), and a hole running off
+    the outline would not lie on the blank — both raise a clear ``ValueError``
+    rather than silently producing a wrong part.
+    """
+
+    eps = 1e-9
+    resolved: list[dict[str, Any]] = []
+    for order, hole in enumerate(holes or []):
+        flange = hole.get("flange")
+        if not isinstance(flange, int) or not 0 <= flange < len(flanges):
+            raise ValueError(f"hole {order}: 'flange' must be an index in [0, {len(flanges) - 1}], got {flange!r}")
+        try:
+            u = float(hole["u"])
+            v = float(hole["v"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"hole {order}: needs numeric 'u' and 'v' offsets ({exc})") from exc
+
+        has_diameter = hole.get("diameter") is not None
+        has_rect = hole.get("length") is not None and hole.get("width") is not None
+        if has_diameter == has_rect:
+            raise ValueError(
+                f"hole {order}: specify exactly one of 'diameter' (round) or "
+                "'length'+'width' (rectangular cutout)"
+            )
+        if has_diameter:
+            diameter = float(hole["diameter"])
+            if diameter <= 0:
+                raise ValueError(f"hole {order}: diameter must be positive")
+            half_u = half_v = diameter / 2.0
+            record: dict[str, Any] = {"kind": "cylindrical_hole", "diameter": diameter}
+        else:
+            length = float(hole["length"])
+            hwidth = float(hole["width"])
+            if length <= 0 or hwidth <= 0:
+                raise ValueError(f"hole {order}: cutout length and width must be positive")
+            half_u, half_v = length / 2.0, hwidth / 2.0
+            record = {"kind": "cutout", "length": length, "width": hwidth}
+
+        cx = flange_starts[flange] + u
+        cy = v
+        # Reject a hole that straddles a bend line: its developed x-extent must not
+        # overlap any bend-allowance region.
+        for j, (r_start, r_end) in enumerate(bend_regions):
+            if cx - half_u < r_end - eps and cx + half_u > r_start + eps:
+                raise ValueError(
+                    f"hole {order} on flange {flange} crosses bend line {j} "
+                    f"(developed x-extent [{cx - half_u:.3f}, {cx + half_u:.3f}] overlaps bend "
+                    f"region [{r_start:.3f}, {r_end:.3f}]); a hole must lie within one flat flange"
+                )
+        # Reject a hole that runs off the blank outline (free edge or width).
+        if cx - half_u < -eps or cx + half_u > developed_length + eps:
+            raise ValueError(
+                f"hole {order} on flange {flange} runs off the blank length "
+                f"(developed x-extent [{cx - half_u:.3f}, {cx + half_u:.3f}] outside "
+                f"[0, {developed_length:.3f}])"
+            )
+        if cy - half_v < -width / 2.0 - eps or cy + half_v > width / 2.0 + eps:
+            raise ValueError(
+                f"hole {order} on flange {flange} runs off the blank width "
+                f"(across-width extent [{cy - half_v:.3f}, {cy + half_v:.3f}] outside "
+                f"[{-width / 2.0:.3f}, {width / 2.0:.3f}])"
+            )
+
+        record.update({"flange": flange, "u": u, "v": v, "center": [cx, cy, 0.0]})
+        resolved.append(record)
+    return resolved
 
 
 def bend_chain(
@@ -149,6 +293,7 @@ def bend_chain(
     *,
     thickness: float,
     width: float,
+    holes: list[dict[str, Any]] | None = None,
 ) -> SheetMetalPart:
     """Model an ordered flange/bend chain as ONE flat blank + folded solid.
 
@@ -163,6 +308,15 @@ def bend_chain(
     ``sum(flanges[0..j]) + sum(BA[0..j-1]) + BA_j/2`` — the centreline of its bend
     region — and spans the full width. The folded solid is a single connected,
     volume-conserving swept ribbon (:func:`_folded_profile`, ADR 0034).
+
+    ``holes`` (ADR 0040, D-019) is an optional list of hole/cutout primitives in
+    **flange-local** frames — ``{"flange": j, "u": <along>, "v": <across>,
+    "diameter": d}`` for a round hole, or ``length``/``width`` in place of
+    ``diameter`` for a rectangular cutout. Each is unfolded into the developed
+    blank (subtracted from the flat DXF outline as an inner wire) and subtracted
+    from the folded solid at its flange's 3-D pose, so the cut file, the DFM
+    features, and the mass/volume all carry the same holes. A hole that would
+    straddle a bend line, or run off the blank, raises a clear ``ValueError``.
     """
 
     if width <= 0 or thickness <= 0:
@@ -196,10 +350,37 @@ def bend_chain(
 
     developed_length = sum(flanges) + sum(allowances)
 
-    from build123d import Line, Pos, Rectangle
+    # Developed span of each flange and each bend region, shared by the flat
+    # unfold (holes), the bend lines, and the folded-solid hole subtraction so all
+    # three cannot drift. Flange j starts at sum(flanges[0..j-1]) + sum(BA[0..j-1]);
+    # bend region j fills the BA gap between flange j and flange j+1.
+    flange_starts: list[float] = []
+    bend_regions: list[tuple[float, float]] = []
+    cursor = 0.0
+    for index, length in enumerate(flanges):
+        flange_starts.append(cursor)
+        cursor += length
+        if index < len(allowances):
+            bend_regions.append((cursor, cursor + allowances[index]))
+            cursor += allowances[index]
+
+    resolved_holes = _resolve_holes(
+        holes, flanges, flange_starts, bend_regions, developed_length=developed_length, width=width
+    )
+
+    from build123d import Circle, Line, Pos, Rectangle
 
     # A single (developed_length x width) blank with x running 0..developed_length.
+    # With no holes this is exactly the pre-ADR-0040 profile; holes are subtracted
+    # as inner wires (algebra-mode ``-=``) so ExportDXF emits them on the cut layer
+    # with the outline.
     flat_profile = Pos(developed_length / 2.0, 0) * Rectangle(developed_length, width)
+    for hole in resolved_holes:
+        cx, cy = hole["center"][0], hole["center"][1]
+        if hole["kind"] == "cylindrical_hole":
+            flat_profile -= Pos(cx, cy) * Circle(hole["diameter"] / 2.0)
+        else:
+            flat_profile -= Pos(cx, cy) * Rectangle(hole["length"], hole["width"])
 
     # Place one bend line per bend at the centreline of its bend region measured
     # along the developed axis: cumulative flange lengths up to and including this
@@ -232,6 +413,7 @@ def bend_chain(
         k_factors,
         thickness=thickness,
         width=width,
+        holes=resolved_holes,
     )
 
     return SheetMetalPart(
@@ -240,6 +422,7 @@ def bend_chain(
         flat_profile=flat_profile,
         bend_lines=bend_lines,
         bends=bend_rows,
+        holes=resolved_holes,
     )
 
 
@@ -253,6 +436,7 @@ def bend(
     thickness: float,
     width: float,
     direction: str = "up",
+    holes: list[dict[str, Any]] | None = None,
 ) -> SheetMetalPart:
     """Model a two-flange (one-bend) sheet-metal strip.
 
@@ -264,6 +448,8 @@ def bend(
     This is a thin convenience over :func:`bend_chain` (ADR 0032): a two-flange,
     single-bend chain. The developed length is ``flange_a + BA + flange_b`` and the
     single bend line sits at ``flange_a + BA/2`` (the bend-region centerline).
+    ``holes`` (ADR 0040) is passed straight through: flange 0 is ``flange_a`` and
+    flange 1 is ``flange_b``.
     """
 
     if flange_a < 0 or flange_b < 0:
@@ -281,4 +467,5 @@ def bend(
         ],
         thickness=thickness,
         width=width,
+        holes=holes,
     )

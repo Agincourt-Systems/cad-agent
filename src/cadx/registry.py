@@ -237,6 +237,35 @@ def publish_sheet_metal(label: str, part: Any, *, layer: str = "cut", role: str 
             source_object=f"obj.{label}",
         )
 
+    # ADR 0040 (deficiency D-019): each flat-pattern hole/cutout is republished as
+    # a spatial feature in the flat-pattern frame so the ADR 0018 DFM rules bind on
+    # API-placed holes (no hand-published redundant feature). A round hole uses
+    # kind="cylindrical_hole" — the exact string the min_hole_diameter /
+    # hole_to_edge / hole_to_bend rules key on — so those rules fire automatically;
+    # a rectangular cutout is emitted as kind="cutout" for provenance. The holes
+    # already live in the exported DXF (they are inner wires of the flat profile)
+    # and in the folded solid (subtracted material); this only adds the DFM record.
+    for index, hole in enumerate(getattr(part, "holes", None) or []):
+        if hole["kind"] == "cylindrical_hole":
+            publish_feature(
+                f"{label}_hole_{index}",
+                "cylindrical_hole",
+                diameter=hole["diameter"],
+                center=hole["center"],
+                axis=[0.0, 0.0, 1.0],
+                through=True,
+                source_object=f"obj.{label}",
+            )
+        else:
+            publish_feature(
+                f"{label}_hole_{index}",
+                "cutout",
+                length=hole["length"],
+                width=hole["width"],
+                center=hole["center"],
+                source_object=f"obj.{label}",
+            )
+
 
 def publish_feature(feature_id: str, kind: str, **properties: Any) -> None:
     """Publish a critical feature such as a hole, slot, boss, rib, or datum."""

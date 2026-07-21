@@ -631,3 +631,249 @@ def build(params):
         assert feat["inside_radius"] == pytest.approx(2.29)
         assert feat["source_object"] == "obj.uchan"
         assert "line" in feat
+
+
+# --- ADR 0040: flat-pattern holes / cutouts (D-019) --------------------------
+#
+# A folded sheet part's flat DXF was a bare outline: holes lived only as
+# hand-published DFM features and never reached the DXF, the folded solid, or the
+# unfold. These tests drive holes placed in FLANGE-LOCAL frames through the
+# public sheet-metal API and pin all three artifacts: the DXF cut layer (parsed
+# back with ezdxf), the folded-solid volume (holes remove real material), and the
+# spatial.json features (so the bend DFM rules bind on API-placed holes).
+
+# Developed x of flange 1's leading edge for the module L-bracket: flange A plus
+# one bend allowance. Used to predict where a flange-1 hole lands on the blank.
+FLANGE1_START_X = FLANGE_A + EXPECTED_BA
+
+
+def test_flat_pattern_hole_in_dxf(tmp_path):
+    """Round holes placed per-flange appear as CIRCLEs on the DXF cut layer at
+    their developed centres; the bend line stays on the bend layer."""
+
+    # Hole on flange 0 (u=20 from x=0) and flange 1 (u=12 from its leading edge).
+    design = tmp_path / "design.py"
+    design.write_text(
+        f"""
+from cadx import publish_sheet_metal
+from cadx.sheetmetal import bend
+
+
+def build(params):
+    part = bend(
+        {FLANGE_A}, {FLANGE_B},
+        angle_deg={ANGLE_DEG}, inside_radius={INSIDE_RADIUS}, k_factor={K_FACTOR},
+        thickness={THICKNESS}, width={WIDTH}, direction="up",
+        holes=[
+            {{"flange": 0, "u": 20.0, "v": 0.0, "diameter": 6.0}},
+            {{"flange": 1, "u": 12.0, "v": 5.0, "diameter": 4.0}},
+        ],
+    )
+    publish_sheet_metal("bracket", part)
+    return part.folded
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "params.yaml").write_text("{}\n", encoding="utf-8")
+    payload = parse_stdout_json(run_cadx(tmp_path, "run", "design.py", "--params", "params.yaml"))
+    run_dir = tmp_path / payload["artifact_dir"]
+
+    doc = ezdxf.readfile(str(run_dir / "bracket.dxf"))
+    msp = doc.modelspace()
+
+    circles = list(msp.query("CIRCLE"))
+    assert len(circles) == 2, f"expected two hole circles on the flat pattern, got {len(circles)}"
+    by_layer = {c.dxf.layer for c in circles}
+    assert by_layer == {"cut"}, f"holes must be on the cut layer, got {by_layer}"
+
+    centers = sorted(((round(c.dxf.center.x, 3), round(c.dxf.center.y, 3), round(c.dxf.radius, 3)) for c in circles))
+    # Flange-0 hole at developed (20, 0) r=3; flange-1 hole at (FLANGE1_START_X+12, 5) r=2.
+    assert centers[0] == pytest.approx((20.0, 0.0, 3.0), abs=1e-3)
+    assert centers[1] == pytest.approx((FLANGE1_START_X + 12.0, 5.0, 2.0), abs=1e-3)
+
+    # The bend line survives on its own layer, register unchanged.
+    bend_entities = [e for e in msp if e.dxf.layer == "bend"]
+    assert len(bend_entities) == 1
+
+
+def test_hole_subtracted_from_folded_volume():
+    """A hole removes real material from the folded solid: the volume is the blank
+    volume minus the hole prisms, exactly, and it stays one connected solid."""
+
+    from cadx.sheetmetal import bend
+
+    holes = [
+        {"flange": 0, "u": 20.0, "v": 0.0, "diameter": 6.0},
+        {"flange": 1, "u": 12.0, "v": 5.0, "diameter": 4.0},
+    ]
+    part = bend(
+        FLANGE_A, FLANGE_B, angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS,
+        k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="up", holes=holes,
+    )
+    blank_volume = part.developed_length * THICKNESS * WIDTH
+    hole_material = sum(math.pi * (h["diameter"] / 2.0) ** 2 * THICKNESS for h in holes)
+    assert part.folded.volume == pytest.approx(blank_volume - hole_material, rel=1e-4)
+    assert len(part.folded.solids()) == 1
+
+
+def test_hole_published_as_spatial_feature(tmp_path):
+    """Each hole is published as a cylindrical_hole feature in the flat-pattern
+    frame with the correct developed centre and owning object."""
+
+    design = tmp_path / "design.py"
+    design.write_text(
+        f"""
+from cadx import publish_sheet_metal
+from cadx.sheetmetal import bend
+
+
+def build(params):
+    part = bend(
+        {FLANGE_A}, {FLANGE_B},
+        angle_deg={ANGLE_DEG}, inside_radius={INSIDE_RADIUS}, k_factor={K_FACTOR},
+        thickness={THICKNESS}, width={WIDTH}, direction="up",
+        holes=[{{"flange": 0, "u": 20.0, "v": 0.0, "diameter": 6.0}}],
+    )
+    publish_sheet_metal("bracket", part)
+    return part.folded
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "params.yaml").write_text("{}\n", encoding="utf-8")
+    payload = parse_stdout_json(run_cadx(tmp_path, "run", "design.py", "--params", "params.yaml"))
+    run_dir = tmp_path / payload["artifact_dir"]
+
+    spatial = json.loads((run_dir / "spatial.json").read_text(encoding="utf-8"))
+    holes = [f for f in spatial["features"] if f.get("kind") == "cylindrical_hole"]
+    assert len(holes) == 1, spatial["features"]
+    hole = holes[0]
+    assert hole["id"] == "feat.bracket_hole_0"
+    assert hole["diameter"] == pytest.approx(6.0)
+    assert hole["source_object"] == "obj.bracket"
+    assert hole["center"][0] == pytest.approx(20.0, abs=1e-6)
+    assert hole["center"][1] == pytest.approx(0.0, abs=1e-6)
+
+
+def _hole_dfm_design(hole_literal: str, inside_radius: float = INSIDE_RADIUS) -> str:
+    return f"""
+from cadx import publish_sheet_metal
+from cadx.sheetmetal import bend
+
+
+def build(params):
+    part = bend(
+        {FLANGE_A}, {FLANGE_B},
+        angle_deg={ANGLE_DEG}, inside_radius={inside_radius}, k_factor={K_FACTOR},
+        thickness={THICKNESS}, width={WIDTH}, direction="up",
+        holes=[{hole_literal}],
+    )
+    publish_sheet_metal("bracket", part)
+    return part.folded
+"""
+
+
+def test_api_hole_binds_hole_to_bend(tmp_path):
+    """A hole placed near (not across) a bend line via the holes API fails
+    hole_to_bend, naming the hole and the bend — no hand-published feature."""
+
+    # Flange-1 hole at u=2.0 (leading edge is the bend boundary): its edge clears
+    # the bend region but sits well within the 2*t hole_to_bend limit.
+    run_dir = _run_design_src(
+        tmp_path, _hole_dfm_design('{"flange": 1, "u": 2.0, "v": 0.0, "diameter": 3.0}')
+    )
+    rules = f"""
+units: mm
+checks:
+  - id: bracket_dfm
+    type: manufacturability
+    object: obj.bracket
+    thickness: {THICKNESS}
+    rules:
+      - rule: hole_to_bend
+"""
+    check = _evaluate_dfm(tmp_path, run_dir, rules)
+    assert check["status"] == "fail", check
+    cited = {fid for v in check["violations"] if v["rule"] == "hole_to_bend" for fid in v["features"]}
+    assert "feat.bracket_hole_0" in cited
+    assert "feat.bracket_bend_0" in cited
+
+
+def test_api_hole_binds_min_hole_diameter(tmp_path):
+    """An undersized API-placed hole fails min_hole_diameter (bound, not inert)."""
+
+    # Diameter 1.0 on 3 mm stock: below the 1*t limit.
+    run_dir = _run_design_src(
+        tmp_path, _hole_dfm_design('{"flange": 0, "u": 20.0, "v": 0.0, "diameter": 1.0}')
+    )
+    rules = f"""
+units: mm
+checks:
+  - id: bracket_dfm
+    type: manufacturability
+    object: obj.bracket
+    thickness: {THICKNESS}
+    rules:
+      - rule: min_hole_diameter
+"""
+    check = _evaluate_dfm(tmp_path, run_dir, rules)
+    assert check["status"] == "fail", check
+    cited = {fid for v in check["violations"] if v["rule"] == "min_hole_diameter" for fid in v["features"]}
+    assert "feat.bracket_hole_0" in cited
+
+
+def test_rect_cutout_in_dxf_and_volume(tmp_path):
+    """A rectangular cutout removes a box of material and appears on the cut layer."""
+
+    from cadx.sheetmetal import bend
+
+    cut = {"flange": 0, "u": 20.0, "v": 0.0, "length": 8.0, "width": 6.0}
+    part = bend(
+        FLANGE_A, FLANGE_B, angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS,
+        k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="up", holes=[cut],
+    )
+    blank_volume = part.developed_length * THICKNESS * WIDTH
+    assert part.folded.volume == pytest.approx(blank_volume - 8.0 * 6.0 * THICKNESS, rel=1e-4)
+    # The flat profile carries one inner wire (the cutout) inside the outline.
+    assert len(part.flat_profile.faces()[0].inner_wires()) == 1
+
+
+def test_hole_crossing_bend_raises():
+    """A hole whose developed extent overlaps a bend region is a clear ValueError."""
+
+    from cadx.sheetmetal import bend
+
+    with pytest.raises(ValueError, match="bend"):
+        # u=39.5 on a 40 mm flange 0, d=3 -> extent [38, 41] crosses the bend at x=40.
+        bend(
+            FLANGE_A, FLANGE_B, angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS,
+            k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="up",
+            holes=[{"flange": 0, "u": 39.5, "v": 0.0, "diameter": 3.0}],
+        )
+
+
+def test_hole_off_blank_raises():
+    """A hole running off the blank width raises a clear ValueError."""
+
+    from cadx.sheetmetal import bend
+
+    with pytest.raises(ValueError):
+        # v=14 with d=6 -> across-width extent [11, 17] exceeds the +15 mm edge.
+        bend(
+            FLANGE_A, FLANGE_B, angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS,
+            k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="up",
+            holes=[{"flange": 0, "u": 20.0, "v": 14.0, "diameter": 6.0}],
+        )
+
+
+def test_no_holes_leaves_flat_profile_bare():
+    """A part with no holes is byte-identical to before: the flat profile has no
+    inner wires and the folded volume is the full blank."""
+
+    from cadx.sheetmetal import bend
+
+    part = bend(
+        FLANGE_A, FLANGE_B, angle_deg=ANGLE_DEG, inside_radius=INSIDE_RADIUS,
+        k_factor=K_FACTOR, thickness=THICKNESS, width=WIDTH, direction="up",
+    )
+    assert part.holes == []
+    assert len(part.flat_profile.faces()[0].inner_wires()) == 0
