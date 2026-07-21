@@ -265,6 +265,86 @@ def _mate_placement(entry: dict[str, Any], parent: dict[str, Any]) -> Any:
     return _location_from(parent_placement) * placement
 
 
+def _world_axis(world_target: Any) -> list[float]:
+    """Return the unit joint axis in world coordinates for a real target frame.
+
+    ADR 0025 fixes the joint axis as the *target frame's local Z*. Expressed in
+    the world/assembly frame it is the image of the local unit-Z point under the
+    world target frame ``world_target = parent_placement * target`` minus that
+    frame's origin — pure Location algebra, identical to what ``_mate_placement``
+    composes, so the axis is guaranteed consistent with the posed placement.
+    """
+
+    from build123d import Location
+
+    tip = (world_target * Location((0.0, 0.0, 1.0))).position
+    origin = world_target.position
+    direction = [float(tip.X) - float(origin.X), float(tip.Y) - float(origin.Y), float(tip.Z) - float(origin.Z)]
+    length = (direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2) ** 0.5
+    if length == 0:
+        return [0.0, 0.0, 0.0]
+    return [component / length for component in direction]
+
+
+# Mate kinds that carry a joint axis (a moving degree of freedom). ``rigid`` is
+# a URDF *fixed* joint and has no axis, so no ``axis`` key is exported for it.
+_KINEMATIC_KINDS = frozenset({"revolute", "prismatic", "cylindrical"})
+
+
+def _mate_frame_export(entry: dict[str, Any], parent: dict[str, Any]) -> dict[str, Any]:
+    """Serialize the frames that define a resolved mate (ADR 0038, D-013).
+
+    Returns a JSON-safe record with the defining ``anchor`` and ``target``
+    frames, the zero-pose ``origin`` (the child's placement at joint value 0),
+    and — for kinematic kinds — the joint ``axis`` as a world-frame unit vector.
+    Together with the parent's own placement (always recorded under D-014) these
+    let a downstream consumer reconstruct the posed placement at any joint value
+    as ``parent * target * J(pose) * anchor⁻¹`` without the design source.
+
+    Computed here in ``_resolve_mates`` because this is the one place that holds
+    both the child entry and its parent entry — the parent is required to read a
+    ``RigidJoint``-spelled ``target`` off the parent shape (via ``_mate_frames``).
+    Real shapes compose build123d Locations; synthetic dict publications use the
+    same translation-only arithmetic as ``_mate_placement``.
+    """
+
+    anchor, target = _mate_frames(entry, parent)
+    kind, _angle, _travel = _mate_pose(entry["mate"])
+    export: dict[str, Any] = {
+        "anchor": _placement_record(anchor),
+        "target": _placement_record(target),
+    }
+
+    if isinstance(entry["object"], dict):
+        # Synthetic (kernel-free) path: frames are translation-only 3-sequences,
+        # so the world axis is the frame's untransformed local Z and the
+        # zero-pose origin is ``parent + target − anchor`` (travel excluded).
+        anchor_position = _placement_position(anchor) or [0.0, 0.0, 0.0]
+        target_position = _placement_position(target) or [0.0, 0.0, 0.0]
+        parent_position = _placement_position(parent.get("placement")) or [0.0, 0.0, 0.0]
+        origin_position = [
+            parent_value + target_value - anchor_value
+            for parent_value, target_value, anchor_value in zip(parent_position, target_position, anchor_position)
+        ]
+        export["origin"] = {"position": origin_position, "orientation": [0.0, 0.0, 0.0]}
+        if kind in _KINEMATIC_KINDS:
+            export["axis"] = [0.0, 0.0, 1.0]
+        return export
+
+    parent_placement = parent.get("placement")
+    world_target = _location_from(target)
+    if parent_placement is not None:
+        world_target = _location_from(parent_placement) * world_target
+    # Zero-pose origin: ``parent * target * anchor⁻¹`` — exactly what
+    # ``_mate_placement`` computes when the pose ``J`` is the identity (angle 0,
+    # travel 0), verified against its composition.
+    origin_location = world_target * _location_from(anchor).inverse()
+    export["origin"] = _placement_record(origin_location)
+    if kind in _KINEMATIC_KINDS:
+        export["axis"] = _world_axis(world_target)
+    return export
+
+
 def _pose_range_warnings(entry: dict[str, Any]) -> list[dict[str, Any]]:
     """Warn when a resolved pose sits outside its declared joint limits.
 
@@ -341,7 +421,13 @@ def _resolve_mates(published: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 progressed = True
                 continue
             try:
-                entry["placement"] = _mate_placement(entry, parent)
+                # Resolve placement and its defining-frame export together, then
+                # assign atomically: a failure in either leaves the part unplaced
+                # with a warning rather than half-placed (ADR 0038 D-013).
+                placement = _mate_placement(entry, parent)
+                frame_export = _mate_frame_export(entry, parent)
+                entry["placement"] = placement
+                entry["mate_export"] = frame_export
                 warnings.extend(_pose_range_warnings(entry))
             except Exception as exc:
                 warnings.append({"type": "mate_failed", "label": label, "message": str(exc)})
@@ -407,16 +493,32 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
     placement_record = _placement_record(placement)
     if placement_record is not None:
         normalized["placement"] = placement_record
+    elif not entry.get("mate"):
+        # ADR 0038 (D-014): a root/unmated part with no placement sits at the
+        # assembly origin — record an explicit identity so consumers need no
+        # missing-key/identity special-casing. A part that DOES declare a mate
+        # but has no resolved placement is genuinely unplaced (unknown target,
+        # cycle, failed frame): its placement key stays absent so the
+        # warning-plus-absence signal from ADR 0024/0025 still flags it, rather
+        # than silently seating it at identity.
+        normalized["placement"] = {"position": [0.0, 0.0, 0.0], "orientation": [0.0, 0.0, 0.0]}
     # Record the declared relationship (JSON-safe fields only) alongside the
     # resolved transform, so agents see why the part sits where it does. The
     # ADR 0025 pose fields ride along; rigid mates carry none of them.
     if entry.get("mate"):
         spec = entry["mate"]
-        normalized["mate"] = {
+        mate_record = {
             key: spec[key]
             for key in ("to", "joint", "target_joint", "kind", "angle", "travel", "angle_range", "travel_range")
             if spec.get(key) is not None
         }
+        # ADR 0038 (D-013): serialize the defining frames (anchor/target), the
+        # derived joint axis, and the zero-pose origin computed at resolution
+        # time. Present only for mates that resolved successfully; an unresolved
+        # mate carries the intent fields above but no frame export.
+        if entry.get("mate_export"):
+            mate_record.update(entry["mate_export"])
+        normalized["mate"] = mate_record
     return normalized
 
 

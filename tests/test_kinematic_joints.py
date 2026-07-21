@@ -86,7 +86,15 @@ def build(params):
 
     assert slider["placement"]["position"] == [10, 0, 12]
     assert slider["bbox"]["min"] == [10, 0, 12]
-    assert slider["mate"] == {"to": "base", "kind": "prismatic", "travel": 7}
+    # ADR 0038 (D-013): frames, world slide axis, and travel-free origin exported.
+    slider_mate = slider["mate"]
+    assert slider_mate["to"] == "base"
+    assert slider_mate["kind"] == "prismatic"
+    assert slider_mate["travel"] == 7
+    assert slider_mate["anchor"] == {"position": [0, 0, 0], "orientation": [0, 0, 0]}
+    assert slider_mate["target"] == {"position": [10, 0, 5], "orientation": [0, 0, 0]}
+    assert slider_mate["origin"]["position"] == [10, 0, 5]
+    assert slider_mate["axis"] == [0, 0, 1]
 
 
 def test_revolute_mate_on_synthetic_object_warns(tmp_path):
@@ -226,9 +234,16 @@ def build(params):
     expected_span = 30 / (2 ** 0.5)
     assert quill["bbox"]["size"][0] == pytest.approx(expected_span, abs=1e-6)
     assert quill["bbox"]["size"][1] == pytest.approx(expected_span, abs=1e-6)
-    assert quill["mate"] == {
-        "to": "frame", "kind": "cylindrical", "angle": 45, "travel": 10,
-    }
+    # ADR 0038 (D-013): frames, joint axis, and zero-pose origin exported.
+    quill_mate = quill["mate"]
+    assert quill_mate["to"] == "frame"
+    assert quill_mate["kind"] == "cylindrical"
+    assert quill_mate["angle"] == 45
+    assert quill_mate["travel"] == 10
+    assert quill_mate["anchor"]["position"] == pytest.approx([0, 0, 0], abs=1e-6)
+    assert quill_mate["target"]["position"] == pytest.approx([0, 0, 3], abs=1e-6)
+    assert quill_mate["origin"]["position"] == pytest.approx([0, 0, 3], abs=1e-6)
+    assert quill_mate["axis"] == pytest.approx([0, 0, 1], abs=1e-6)
 
 
 def test_motion_envelope_sweep_catches_interference(tmp_path):

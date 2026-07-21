@@ -87,7 +87,15 @@ def build(params):
     assert child["bbox"]["min"] == [30, 0, 10]
     assert child["bbox"]["max"] == [40, 10, 20]
     assert child["placement"]["position"] == [30, 0, 10]
-    assert child["mate"] == {"to": "base"}
+    # ADR 0038 (D-013): the rigid mate record now carries its defining frames
+    # and zero-pose origin (a URDF fixed joint); a rigid mate has no joint axis.
+    mate_record = child["mate"]
+    assert mate_record["to"] == "base"
+    assert "kind" not in mate_record
+    assert mate_record["anchor"] == {"position": [0, 0, 0], "orientation": [0, 0, 0]}
+    assert mate_record["target"] == {"position": [30, 0, 10], "orientation": [0, 0, 0]}
+    assert mate_record["origin"]["position"] == [30, 0, 10]
+    assert "axis" not in mate_record
 
 
 def test_mate_chain_resolves_regardless_of_publish_order(tmp_path):
@@ -210,7 +218,13 @@ def build(params):
     tower = objects["tower"]
     assert tower["placement"]["position"] == pytest.approx([20, 5, 18])
     assert tower["bbox"]["max"][2] == pytest.approx(33.0, abs=1e-6)
-    assert tower["mate"] == {"to": "base"}
+    # ADR 0038 (D-013): defining frames and zero-pose origin exported.
+    tower_mate = tower["mate"]
+    assert tower_mate["to"] == "base"
+    assert tower_mate["anchor"]["position"] == pytest.approx([0, 0, -15], abs=1e-6)
+    assert tower_mate["target"]["position"] == pytest.approx([20, 5, 3], abs=1e-6)
+    assert tower_mate["origin"]["position"] == pytest.approx([20, 5, 18], abs=1e-6)
+    assert "axis" not in tower_mate
 
     fin_size = objects["fin"]["bbox"]["size"]
     assert fin_size == pytest.approx([2, 10, 20], abs=1e-6)
@@ -253,4 +267,11 @@ def build(params):
     assert tower["placement"]["position"] == pytest.approx([20, 5, 18])
     assert tower["bbox"]["min"][2] == pytest.approx(3.0, abs=1e-6)
     assert tower["bbox"]["max"][2] == pytest.approx(33.0, abs=1e-6)
-    assert tower["mate"] == {"to": "base", "joint": "plug", "target_joint": "socket"}
+    # ADR 0038 (D-013): the RigidJoint-spelled frames are resolved and exported.
+    tower_mate = tower["mate"]
+    assert tower_mate["to"] == "base"
+    assert tower_mate["joint"] == "plug"
+    assert tower_mate["target_joint"] == "socket"
+    assert tower_mate["anchor"]["position"] == pytest.approx([0, 0, -15], abs=1e-6)
+    assert tower_mate["target"]["position"] == pytest.approx([20, 5, 3], abs=1e-6)
+    assert tower_mate["origin"]["position"] == pytest.approx([20, 5, 18], abs=1e-6)

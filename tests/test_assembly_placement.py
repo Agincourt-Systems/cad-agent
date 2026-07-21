@@ -109,8 +109,9 @@ def build(params):
         assert shifted_min[axis] == pytest.approx(base_min[axis] + delta[axis], abs=1e-6)
         assert shifted_max[axis] == pytest.approx(base_max[axis] + delta[axis], abs=1e-6)
 
-    # The unplaced part keeps no placement key; the placed one records position.
-    assert "placement" not in objects["base"]
+    # ADR 0038 (D-014): an unmated root part records an explicit identity
+    # placement; the explicitly placed part records its position.
+    assert objects["base"]["placement"] == {"position": [0.0, 0.0, 0.0], "orientation": [0.0, 0.0, 0.0]}
     placement = objects["shifted"]["placement"]
     assert placement["position"] == pytest.approx([30.0, 5.0, 7.0], abs=1e-6)
 
@@ -306,7 +307,8 @@ def build(params):
     assert objects["moved"]["bbox"]["min"] == [5, 2, 0]
     assert objects["moved"]["bbox"]["max"] == [15, 12, 10]
     assert objects["moved"]["placement"]["position"] == [5, 2, 0]
-    assert "placement" not in objects["base"]
+    # ADR 0038 (D-014): the unmated root part records an explicit identity.
+    assert objects["base"]["placement"] == {"position": [0.0, 0.0, 0.0], "orientation": [0.0, 0.0, 0.0]}
 
 
 def test_feature_alignment_missing_selector_fails(tmp_path):
