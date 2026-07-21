@@ -791,6 +791,29 @@ def _run_param_set(run_dir: Path, params: dict[str, Any], sweep_root: Path, time
     return Path(payload["artifact_dir"]), payload["status"]
 
 
+def _range_violations(set_run_dir: Path) -> list[dict[str, Any]]:
+    """Return a swept run's declared joint-limit violations (ADR 0039, D-009).
+
+    Reads the set's ``diagnostics.json`` for ``mate_out_of_range`` warnings — the
+    machine-visible record ADR 0025 already emits when a pose sits outside its
+    declared ``angle_range`` / ``travel_range``. Each violation keeps the mate
+    ``label`` and the warning ``message`` (which already names the pose value and
+    the declared range), so a failing set report points straight at the joint
+    that overshot. A run with no diagnostics degrades to "no violations": the
+    absence of the warning file is not itself a limit violation.
+    """
+
+    try:
+        diagnostics = read_json(set_run_dir / "diagnostics.json")
+    except Exception:
+        return []
+    return [
+        {"label": warning.get("label"), "message": warning.get("message")}
+        for warning in diagnostics.get("warnings", [])
+        if warning.get("type") == "mate_out_of_range"
+    ]
+
+
 def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> dict[str, Any]:
     """Run the design across parameter sets and aggregate ordinary sub-checks.
 
@@ -808,6 +831,12 @@ def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> d
         shutil.rmtree(sweep_root)
     sweep_root.mkdir(parents=True, exist_ok=True)
 
+    # ADR 0039 (D-009): opt-in enforcement of declared joint limits. Off by
+    # default so every existing sweep behaves byte-for-byte as before (an
+    # out-of-range pose stays a warning and the geometry is still placed as
+    # requested); when on, a swept pose outside its declared range fails its set.
+    fail_on_range = bool(check.get("fail_on_range_violation", False))
+
     sets: list[dict[str, Any]] = []
     for params in check["params"]:
         set_run_dir, status = _run_param_set(run_dir, params, sweep_root, timeout)
@@ -816,8 +845,16 @@ def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> d
             continue
         spatial = read_json(set_run_dir / "spatial.json")
         sub_checks = [_evaluate_check(spatial, sub, set_run_dir, timeout) for sub in check.get("checks", [])]
-        set_passed = all(result["status"] == "pass" for result in sub_checks)
-        sets.append({"params": params, "status": "pass" if set_passed else "fail", "checks": sub_checks})
+        range_violations = _range_violations(set_run_dir) if fail_on_range else []
+        set_passed = all(result["status"] == "pass" for result in sub_checks) and not range_violations
+        set_record: dict[str, Any] = {
+            "params": params,
+            "status": "pass" if set_passed else "fail",
+            "checks": sub_checks,
+        }
+        if range_violations:
+            set_record["range_violations"] = range_violations
+        sets.append(set_record)
 
     passed = sum(1 for entry in sets if entry["status"] == "pass")
     return {
