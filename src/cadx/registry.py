@@ -177,7 +177,16 @@ def publish_flat(label: str, profile: Any, *, layer: str = "cut", thickness_mm: 
     )
 
 
-def publish_sheet_metal(label: str, part: Any, *, layer: str = "cut", role: str = "part", **metadata: Any) -> None:
+def publish_sheet_metal(
+    label: str,
+    part: Any,
+    *,
+    layer: str = "cut",
+    role: str = "part",
+    placement: Any = None,
+    mate: Any = None,
+    **metadata: Any,
+) -> None:
     """Publish a folded sheet-metal part: 3D solid + flat pattern + bend table.
 
     ``part`` is a :class:`cadx.sheetmetal.SheetMetalPart`. Its folded solid is
@@ -187,6 +196,18 @@ def publish_sheet_metal(label: str, part: Any, *, layer: str = "cut", role: str 
     emit the combined cut+bend DXF and the ``bends.json`` bend table. The internal
     ``flat`` key also makes auto-flatten (ADR 0013) skip this entry, so the bend
     DXF is never overwritten by a naive flatten of the folded solid.
+
+    ADR 0041 (deficiency D-020): ``placement`` and ``mate`` accept exactly what
+    :func:`publish` accepts, and are recorded on the published entry so the
+    runner's mate resolution and placement normalization (ADR 0038 semantics)
+    treat a folded sheet part identically to a plain part — a clevis is a folded
+    sheet part and must be a revolute-mate child through the public API. The two
+    are mutually exclusive (a part cannot have both a hand-computed and a derived
+    transform), mirroring :func:`publish`. Placement moves only the folded solid
+    (its bounding box, mass properties, and 3-D exports); the flat DXF,
+    ``bends.json``, and the bend/hole spatial features below stay in the
+    **flat-pattern frame**, which is a press-brake / laser quantity independent of
+    the assembled pose.
 
     ADR 0033 (deficiency D-004): each bend is ALSO published as a ``kind="bend"``
     spatial feature so the ``min_bend_radius`` / ``hole_to_bend`` DFM rules (which
@@ -198,21 +219,25 @@ def publish_sheet_metal(label: str, part: Any, *, layer: str = "cut", role: str 
     brake table and the DFM feature share one definition of every bend line.
     """
 
-    _PUBLISHED.append(
-        {
-            "label": label,
-            "role": role,
-            "object": part.folded,
-            "placement": None,
-            "metadata": metadata,
-            "flat": {
-                "profile": part.flat_profile,
-                "layer": layer,
-                "bend_lines": part.bend_lines,
-                "bends": part.bends,
-            },
-        }
-    )
+    if placement is not None and mate is not None:
+        raise ValueError("publish_sheet_metal() accepts either placement or mate, not both")
+
+    entry: dict[str, Any] = {
+        "label": label,
+        "role": role,
+        "object": part.folded,
+        "placement": placement,
+        "metadata": metadata,
+        "flat": {
+            "profile": part.flat_profile,
+            "layer": layer,
+            "bend_lines": part.bend_lines,
+            "bends": part.bends,
+        },
+    }
+    if mate is not None:
+        entry["mate"] = dict(mate)
+    _PUBLISHED.append(entry)
 
     # Emit one kind="bend" spatial feature per bend so the bend DFM rules fire.
     # ``publish_feature`` namespaces the id as ``feat.<id>``; ``source_object``
