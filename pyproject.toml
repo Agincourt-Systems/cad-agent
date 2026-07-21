@@ -28,6 +28,12 @@ test = [
   # ezdxf backs the DXF flat-pattern parse-back tests; without it those tests
   # importorskip and silently pass. See ADR 0030 / deficiency D-002.
   "ezdxf>=1.0",
+  # tests/test_packaging.py parses this file and evaluates the declared
+  # version specifiers semantically; declare its own imports here so the
+  # guard tests never fall to the same undeclared-test-dependency defect
+  # (D-002 class) they exist to prevent.
+  "packaging>=21.0",
+  "tomli>=1.2; python_version < '3.11'",
 ]
 
 [project.scripts]
