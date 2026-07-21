@@ -18,6 +18,8 @@ Severity protocol:
 
 ## D-001 — Unbounded build123d dependency breaks cadx; interference check silently passes
 
+> **STATUS: FIXED upstream (ADR 0030, cadx fba4d36): build123d capped <0.11, cap comment cites this ID. Verified: 201/201 cadx tests green on 0.10.0.**
+
 - **ID:** D-001
 - **Phase:** 0 (bring-up)
 - **Operation attempted:** Fresh install per cadx README (`pip install -e .[cad,render,test]`), then `pytest`.
@@ -51,6 +53,8 @@ Severity protocol:
 
 ## D-002 — `ezdxf` used by tests but not declared as a dependency
 
+> **STATUS: FIXED upstream (ADR 0030): ezdxf declared. Verified in pyproject.**
+
 - **ID:** D-002
 - **Phase:** 0 (bring-up)
 - **Operation attempted:** Install per README, run DXF-related tests.
@@ -65,6 +69,8 @@ Severity protocol:
 - **Suggested fix:** Add `ezdxf` to the `test` extra (or a `dxf` extra).
 
 ## D-003 — Multi-bend sheet parts unsupported (single-bend, two-flange cap)
+
+> **STATUS: FIXED upstream (ADR 0032): new multi-bend chain API. Verified: 2-bend clevis = one blank, dev length 150.3597 mm = 40+BA+60+BA+40, two bend lines at hand-calc positions, one DXF, connected folded solid; 3-bend also works.**
 
 - **ID:** D-003
 - **Phase:** 0 (capability probe, sheet metal)
@@ -89,6 +95,8 @@ Severity protocol:
 
 ## D-004 — Bend-safety DFM rules can never fire on the real bend flow
 
+> **STATUS: FIXED upstream (ADR 0033): bends emitted as spatial kind="bend" features. Verified red-green: r=0.5 mm fails min_bend_radius, r=2.29 passes; hole_to_bend fires both ways. Note: check needs explicit thickness: parameter (documented).**
+
 - **ID:** D-004
 - **Phase:** 0 (capability probe, sheet metal)
 - **Operation attempted:** `manufacturability` check with
@@ -112,6 +120,8 @@ Severity protocol:
 
 ## D-005 — Folded-solid volume ~4.9% low (bend-region material omitted)
 
+> **STATUS: FIXED upstream (ADR 0034): swept-ribbon bend region, Pappus-exact. Verified: folded volume = blank volume to ~1e-16 relative for 1-, 2-, 3-bend parts.**
+
 - **ID:** D-005
 - **Phase:** 0 (capability probe, sheet metal)
 - **Operation attempted:** Mass properties of a 90° bent part (40/60 mm
@@ -130,6 +140,8 @@ Severity protocol:
 
 ## D-006 — No assembly-level inertia aggregation
 
+> **STATUS: FIXED upstream (ADR 0036): assembly.inertia tensor with units/about/axes semantics. Verified vs parallel-axis hand calc to 0.0000% on a two-material assembly.**
+
 - **ID:** D-006
 - **Phase:** 0 (capability probe, assembly)
 - **Operation attempted:** Read an aggregate inertia tensor for a multi-part
@@ -147,6 +159,8 @@ Severity protocol:
   sibling path with parallel-axis transfer.
 
 ## D-007 — `matrix_of_inertia` is unit-density geometric inertia (mm⁵), a silent unit trap
+
+> **STATUS: FIXED upstream (ADR 0037): matrix_of_inertia_semantics field (units mm^5, unit density, part centroid, world-at-placed-pose axes). Verified self-consistent incl. 30-deg-rotated part off-diagonals. Residual: still world axes, see D-017.**
 
 - **ID:** D-007
 - **Phase:** 0 (capability probe, mass properties)
@@ -170,6 +184,8 @@ Severity protocol:
 
 ## D-008 — No per-part mass; material name does not imply density
 
+> **STATUS: FIXED upstream (ADR 0035): material-implied density (6061-T6 -> 2.70 g/cm^3), per-part mass in spatial.json, explicit density= override wins, density_source recorded. Residual: unknown material silent, see D-016.**
+
 - **ID:** D-008
 - **Phase:** 0 (capability probe, mass properties)
 - **Operation attempted:** Get part mass from a declared material
@@ -186,6 +202,8 @@ Severity protocol:
   names, with override.
 
 ## D-009 — ROM sweep is discrete sampling; `angle_range` violations only warn
+
+> **STATUS: FIXED upstream (ADR 0039): parametric check gains opt-in fail_on_range_violation. Verified red-green: 120 deg outside [0,90] fails with range_violations detail; in-range passes; default remains warn-only.**
 
 - **ID:** D-009
 - **Phase:** 0 (capability probe, kinematics)
@@ -207,6 +225,8 @@ Severity protocol:
 
 ## D-010 — CLI emits raw traceback instead of JSON error
 
+> **STATUS: FIXED upstream (ADR 0031): missing-dir inspect/evaluate now print {"status":"error","message":...} JSON, exit 1, traceback on stderr. Verified red-green; new probe probes/modeling/probe_07_cli_error_contract.py.**
+
 - **ID:** D-010 · **Phase:** 0 (modeling probe) · **Severity:** PAPERCUT
 - **Operation:** `cadx inspect /nonexistent/xyz` (also `evaluate`).
 - **Expected:** JSON error object per the CLI's one-JSON-per-subcommand
@@ -217,6 +237,8 @@ Severity protocol:
 
 ## D-011 — `--artifact-root` path shape undocumented
 
+> **STATUS: FIXED upstream (ADR 0031, doc): README documents <root>/NNNN/ layout and authoritative artifact_dir.**
+
 - **ID:** D-011 · **Phase:** 0 (modeling probe) · **Severity:** PAPERCUT
 - **Operation:** `cadx run design.py --artifact-root out`.
 - **Expected:** `out/runs/NNNN/` (as docs imply). **Actual:** `out/0001/`.
@@ -225,12 +247,16 @@ Severity protocol:
 
 ## D-012 — Implicit `inspect` inside `run` undocumented
 
+> **STATUS: FIXED upstream (ADR 0031, doc): README states run writes spatial.json; inspect optional before evaluate.**
+
 - **ID:** D-012 · **Phase:** 0 (modeling probe) · **Severity:** PAPERCUT
 - **Operation:** README quick-start `run → inspect → evaluate`.
 - **Expected/Actual:** `run` already writes `spatial.json` with detected
   features; `inspect` is not required before `evaluate`. Doc clarity only.
 
 ## D-013 — Mate anchor/target frames dropped from JSON; joint axis and zero-pose origin unrecoverable
+
+> **STATUS: FIXED upstream (ADR 0038): mate record now carries axis, origin, anchor, target. Verified: elbow-30-deg reconstruction parent*target*J(30)*anchor^-1 equals posed placement to <1e-6. Residual: frames are world-frame only (see D-017).**
 
 - **ID:** D-013
 - **Phase:** 0 (capability probe, exports)
@@ -257,6 +283,8 @@ Severity protocol:
 
 ## D-014 — Root/unplaced parts have `placement: None`
 
+> **STATUS: FIXED upstream (ADR 0038): root/unmated parts record explicit identity placement.**
+
 - **ID:** D-014 · **Phase:** 0 (exports probe) · **Severity:** MINOR
 - **Operation:** Read the world frame of the root part of an assembly.
 - **Expected:** Identity placement recorded. **Actual:** `placement` is
@@ -267,6 +295,8 @@ Severity protocol:
 
 ## D-015 — Export set varies silently with part count / shape
 
+> **STATUS: FIXED upstream (ADR 0031, doc): per-run export set documented (assembly.* only with >=2 real parts; auto-flatten rules).**
+
 - **ID:** D-015 · **Phase:** 0 (exports probe) · **Severity:** PAPERCUT
 - **Operation:** Predict the artifact set of a run.
 - **Expected/Actual:** Combined `assembly.step` appears only with ≥2 real
@@ -274,3 +304,155 @@ Severity protocol:
   even when it is not a sheet part. Documented (cadx ADR-0013) but
   surprising.
 - **Workaround:** Gate scripts assert the expected artifact list per run.
+
+## D-016 — Unknown material name resolves silently to no density / no mass
+
+> **STATUS: OPEN (found while verifying the D-008 fix, cadx fba4d36).**
+
+- **ID:** D-016 · **Phase:** 0 (fix verification) · **Severity:** MINOR
+- **Operation:** `publish(material="unobtanium")` (a typo'd alloy name).
+- **Expected:** A warning in diagnostics; ideally the run flags it.
+- **Actual:** Only `metadata.density_resolved=false`; `warnings==[]`; the
+  part silently has no mass. A gate that does not read `density_resolved`
+  ships a massless link into torque math.
+- **Minimal repro:**
+  `probes/assembly/probe_06*::test_unknown_material_records_unresolved_and_is_silent`.
+- **Workaround:** Our gate scripts assert `density_resolved` (or `mass`)
+  on every part with a material.
+- **Suggested fix:** Emit a diagnostics warning for unresolved materials.
+
+## D-017 — Inertia tensor still world-axes at placed pose, not link frame
+
+> **STATUS: OPEN (residual of the D-007 fix; semantics are now honest, consumption still manual).**
+
+- **ID:** D-017 · **Phase:** 0 (fix verification) · **Severity:** MINOR
+- **Operation:** Consume per-part inertia for URDF `<inertial>`.
+- **Expected (ideal):** Mass-scaled inertia + CoM in the link body frame.
+- **Actual:** Unit-density tensor in world axes at the placed pose
+  (declared truthfully by `matrix_of_inertia_semantics`). The URDF layer
+  must scale by density and rotate by the inverse placement.
+- **Minimal repro:** `probes/exports/probe_6*` (elbow at 30°: CoM/tensor in
+  world coordinates).
+- **Workaround:** Do the scale+rotation in our URDF generator (Phase 5);
+  probes pin the semantics.
+- **Suggested fix:** Optional `frame:"link"` emission alongside world.
+
+## D-018 — Joint axis/origin exported in world frame only
+
+> **STATUS: OPEN (residual of the D-013 fix).**
+
+- **ID:** D-018 · **Phase:** 0 (fix verification) · **Severity:** PAPERCUT
+- **Operation:** Read parent-relative joint origin/axis (URDF convention).
+- **Expected:** Parent-relative form available directly.
+- **Actual:** World-frame only; derivable as `parent^-1 * origin` since
+  parent placements are now always present.
+- **Minimal repro:** `probes/exports/probe_6*`.
+- **Workaround:** One transform in the URDF generator.
+
+## D-019 — Flat-pattern DXF contains no holes or cutouts (bare outline only)
+
+> **STATUS: OPEN. Found Phase 3 (shoulder group), cadx fba4d36.**
+
+- **ID:** D-019 · **Phase:** 3 (part modeling) · **Severity:** MAJOR
+- **Operation:** Export the SendCutSend cut DXF for a bent bracket with
+  bolt circles and lightening holes.
+- **Expected:** Developed blank outline + all cutouts on the `cut` layer.
+- **Actual:** `bend_chain.flat_profile` is a bare rectangle; there is no
+  cutout API. Holes exist only as separately published flat-frame DFM
+  features and are ABSENT from the exported DXF. A shop cutting this file
+  produces an undrillable blank — wrong-but-plausible manufacturing
+  output (spec §8: MAJOR minimum).
+- **Minimal repro:** run `designs/shoulder_upperarm.py`; inspect
+  `shoulder_yoke.dxf` → 4 cut lines, zero holes.
+- **Workaround:** None acceptable for fabrication. Phase 3 gate holds the
+  DXFs as geometric flat patterns only; fabrication-ready DXFs blocked on
+  a cadx fix (hole projection into the developed blank) or an
+  operator-approved post-process step.
+- **Suggested fix:** Let `publish_sheet_metal` accept hole/cutout
+  primitives positioned in flange-local frames, unfold them into the
+  developed blank, and emit them on the `cut` layer.
+
+## D-020 — `publish_sheet_metal` accepts neither placement nor mate
+
+> **STATUS: OPEN. Found independently by two Phase 3 groups (elbow EF-2, shoulder SU-1).**
+
+- **ID:** D-020 · **Phase:** 3 · **Severity:** MAJOR
+- **Operation:** Pose a folded sheet part in an assembly / make it the
+  child of a revolute mate (a clevis IS a folded sheet part; this is the
+  normal case, not an edge case).
+- **Expected:** `publish_sheet_metal(label, part, placement=…, mate=…)`.
+- **Actual:** TypeError — folded parts are always identity-placed and
+  cannot be a mate child through the public API.
+- **Minimal repro:** `publish_sheet_metal("x", part, placement=Location(...))`.
+- **Workarounds used (both ugly):** elbow group mutated the registry
+  entry dict directly; shoulder group baked a Location into a re-wrapped
+  `SheetMetalPart` and hung the J2 mate on a fixture horn instead of the
+  arm. Both bypass the public API and will not survive a cadx refactor.
+- **Suggested fix:** Pass placement/mate through `publish_sheet_metal` to
+  the underlying publish record.
+
+## D-021 — DFM `min_bend_radius` default (1.0·t) rejects verified press-brake radii
+
+> **STATUS: OPEN (MINOR).**
+
+- **ID:** D-021 · **Phase:** 3 · **Severity:** MINOR
+- Default floor = 1.0×thickness (2.29 mm) fails every bend at the
+  SendCutSend-verified 0.81 mm effective radius for 0.090" 5052; every
+  design must pass an explicit `min`. Also our own params lacked a
+  `min_bend_radius` field to anchor the override (added — see LOG).
+- **Repro:** manufacturability check with no explicit min on an R=0.81 bend.
+- **Suggested fix:** material/process-aware default or a documented
+  requirement that `min` mirrors the fab house's published value.
+
+## D-022 — No `min_flange` DFM rule
+
+> **STATUS: OPEN (MINOR).**
+
+- **ID:** D-022 · **Phase:** 3 · **Severity:** MINOR
+- `params.sheet.design_rules.min_flange_length` (8.28 mm verified) has no
+  cadx DFM counterpart; shoulder group enforced it in-test from bend
+  positions. **Suggested fix:** add a `min_flange` rule keyed off the
+  bend table.
+
+## D-023 — DFM frame split: bend rules use flat frame, edge/web rules use folded bbox
+
+> **STATUS: OPEN (MINOR).**
+
+- **ID:** D-023 · **Phase:** 3 · **Severity:** MINOR
+- `hole_to_bend` evaluates in the flat-pattern frame while
+  `hole_to_edge`/`min_web` use the folded 3-D bbox, so the rule sets
+  cannot run together on a bent part; folded bend arcs also auto-detect
+  as spurious `slot` features (2 per bend), polluting feature-based
+  rules. Groups restricted DFM to frame-consistent rules.
+- **Repro:** `designs/elbow_forearm.py` evaluate with edge rules enabled.
+- **Suggested fix:** evaluate all sheet DFM in the flat frame; suppress
+  feature auto-detection on bend arc surfaces.
+
+## D-024 — `bend_chain` extrudes width along −Y (undocumented)
+
+> **STATUS: OPEN (PAPERCUT).**
+
+- **ID:** D-024 · **Phase:** 3 · **Severity:** PAPERCUT
+- Folded solid occupies Y ∈ [−width, 0]; silently caused a width-sized
+  placement error until caught by bbox inspection. Document or center it.
+
+## D-025 — Dimension checks are world-AABB only; no part-frame target
+
+> **STATUS: OPEN (MINOR).**
+
+- **ID:** D-025 · **Phase:** 3 · **Severity:** MINOR
+- A revolute-posed 60 mm platform reads 84.85 mm at 45° because
+  `obj.<part>.bbox` is the world AABB. Zero-pose checks are the
+  workaround. **Suggested fix:** `frame: part` option on dimension checks.
+- **Repro:** `designs/base_j1.py` evaluate at `j1_angle=45`.
+
+## D-026 — Assembly aggregates silently exclude `role="fixture"` parts
+
+> **STATUS: OPEN (MINOR, documented behavior worth a warning).**
+
+- **ID:** D-026 · **Phase:** 3 · **Severity:** MINOR
+- `assembly.mass`/CoM count only final parts (612 g vs true ~711 g with
+  fixtures in the base group); a stability or CoM check authored without
+  knowing this validates the wrong number. **Suggested fix:** aggregate
+  metadata listing what was included, or an `include_roles:` option.
+- **Repro:** `designs/base_j1.py`, compare assembly.mass vs summed parts.
