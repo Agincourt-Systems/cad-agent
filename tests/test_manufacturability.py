@@ -15,11 +15,14 @@ inert and the published features pass straight into ``spatial.json``.
 """
 
 import json
+import math
 import os
 import subprocess
 import sys
 import textwrap
 from pathlib import Path
+
+import pytest
 
 
 def run_cadx(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -663,3 +666,332 @@ def test_unknown_rule_and_passing_slot(tmp_path):
     # Slot width 6 >= thickness 4 passes, and the unknown rule contributes nothing.
     assert check["status"] == "pass"
     assert check["violations"] == []
+
+
+# --- ADR 0043: min_flange rule (D-022) ---------------------------------------
+#
+# min_flange keys off the published kind="bend" features (flat-pattern frame,
+# ADR 0033): each carries a 2D ``line`` across the blank width and a midpoint
+# ``center``. The developed (flange) axis is x, matching bend_chain's flat
+# pattern; the blank runs x in [0, blank_length]. A flange segment is the gap
+# between two consecutive boundaries (a blank edge or a bend line); every
+# segment, including the interior web of a U-channel, must clear the limit.
+
+
+def _bend_feature(feature_id: str, bend_x: float) -> str:
+    """A synthetic flat-frame bend feature at developed position ``bend_x``.
+
+    Mirrors what publish_sheet_metal emits: a vertical bend line spanning the
+    width with a midpoint center, so min_flange reads bend_x from ``center[0]``.
+    """
+
+    return textwrap.dedent(
+        f"""
+        publish_feature(
+            "{feature_id}",
+            kind="bend",
+            inside_radius=3,
+            line=[[{bend_x}, -10], [{bend_x}, 10]],
+            center=[{bend_x}, 0, 0],
+            source_object="obj.plate",
+        )
+        """
+    )
+
+
+def test_min_flange_outer_flange(tmp_path):
+    """A stubby outer flange fails min_flange; lengthening it passes.
+
+    Blank runs x in [0, 100]; a bend at x=5 leaves a 5 mm left flange (0->5),
+    below an explicit 10 mm minimum, so it fails naming the bend. Moving the
+    bend to x=20 leaves 20 mm and 80 mm flanges, both clearing 10 mm.
+    """
+
+    run_dir = _run_model(tmp_path, _bend_feature("stub_bend", 5))
+    check = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir,
+            """
+            units: mm
+            checks:
+              - id: plate_dfm
+                type: manufacturability
+                object: obj.plate
+                rules:
+                  - rule: min_flange
+                    min: 10
+                    blank_length: 100
+            """,
+        )
+    )
+    assert check["status"] == "fail"
+    assert "feat.stub_bend" in _violation_features(check, "min_flange")
+
+    run_dir2 = _run_model(tmp_path, _bend_feature("ok_bend", 20))
+    check2 = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir2,
+            """
+            units: mm
+            checks:
+              - id: plate_dfm
+                type: manufacturability
+                object: obj.plate
+                rules:
+                  - rule: min_flange
+                    min: 10
+                    blank_length: 100
+            """,
+        )
+    )
+    assert check2["status"] == "pass"
+    assert _violation_features(check2, "min_flange") == set()
+
+
+def test_min_flange_relative_limit(tmp_path):
+    """The thickness-relative form resolves the limit from part thickness.
+
+    factor 4.0 on thickness 4 mm -> a 16 mm floor. A bend at x=10 leaves a
+    10 mm flange (< 16) and fails; at x=20 both flanges clear 16 mm.
+    """
+
+    run_dir = _run_model(tmp_path, _bend_feature("near_bend", 10))
+    check = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir,
+            """
+            units: mm
+            checks:
+              - id: plate_dfm
+                type: manufacturability
+                object: obj.plate
+                thickness: 4
+                rules:
+                  - rule: min_flange
+                    factor: 4.0
+                    blank_length: 100
+            """,
+        )
+    )
+    assert check["status"] == "fail"
+    fail = next(v for v in check["violations"] if v["rule"] == "min_flange")
+    assert float(fail["limit"]) == 16.0
+    assert float(fail["observed"]) == 10.0
+
+    run_dir2 = _run_model(tmp_path, _bend_feature("far_bend", 20))
+    check2 = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir2,
+            """
+            units: mm
+            checks:
+              - id: plate_dfm
+                type: manufacturability
+                object: obj.plate
+                thickness: 4
+                rules:
+                  - rule: min_flange
+                    factor: 4.0
+                    blank_length: 100
+            """,
+        )
+    )
+    assert check2["status"] == "pass"
+
+
+def test_min_flange_interior_web(tmp_path):
+    """A U-channel's short interior web fails min_flange citing BOTH bends.
+
+    Two bends at x=30 and x=40 over a 100 mm blank give segments 30 (outer),
+    10 (web), 60 (outer). With a 15 mm minimum only the 10 mm web fails, and
+    the violation names both bends bounding it. Spreading the bends to x=30 and
+    x=60 lengthens the web to 30 mm and the whole part passes.
+    """
+
+    run_dir = _run_model(
+        tmp_path, _bend_feature("web_bend_a", 30) + _bend_feature("web_bend_b", 40)
+    )
+    check = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir,
+            """
+            units: mm
+            checks:
+              - id: plate_dfm
+                type: manufacturability
+                object: obj.plate
+                rules:
+                  - rule: min_flange
+                    min: 15
+                    blank_length: 100
+            """,
+        )
+    )
+    assert check["status"] == "fail"
+    # The single failing segment (the web) cites both bounding bends.
+    assert _violation_features(check, "min_flange") == {"feat.web_bend_a", "feat.web_bend_b"}
+
+    run_dir2 = _run_model(
+        tmp_path, _bend_feature("web_bend_a", 30) + _bend_feature("web_bend_b", 60)
+    )
+    check2 = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir2,
+            """
+            units: mm
+            checks:
+              - id: plate_dfm
+                type: manufacturability
+                object: obj.plate
+                rules:
+                  - rule: min_flange
+                    min: 15
+                    blank_length: 100
+            """,
+        )
+    )
+    assert check2["status"] == "pass"
+
+
+def test_min_flange_real_bend_flow(tmp_path):
+    """min_flange fires on a real publish_sheet_metal part with a stubby flange.
+
+    A 5 mm / 60 mm single-bend bracket: the bend line sits at flange_a + BA/2
+    (~8.1 mm) in the developed frame, under a 15 mm minimum, so the short leg
+    fails naming the emitted feat.bracket_bend_0. blank_length is the part's
+    developed length (computed here from the bend-allowance formula); thickness
+    is passed explicitly per ADR 0033 (a folded bbox min is a flange, not gauge).
+    """
+
+    pytest.importorskip("build123d")
+    thickness, radius, k_factor, angle = 2.29, 3.0, 0.44, 90.0
+    flange_a, flange_b = 5.0, 60.0
+    bend_allowance = (math.pi / 180.0) * angle * (radius + k_factor * thickness)
+    developed_length = flange_a + flange_b + bend_allowance
+
+    design = tmp_path / "design.py"
+    design.write_text(
+        textwrap.dedent(
+            f"""
+            from cadx import publish_sheet_metal
+            from cadx.sheetmetal import bend
+
+
+            def build(params):
+                part = bend(
+                    {flange_a},
+                    {flange_b},
+                    angle_deg={angle},
+                    inside_radius={radius},
+                    k_factor={k_factor},
+                    thickness={thickness},
+                    width=30,
+                )
+                publish_sheet_metal("bracket", part, role="final")
+                return part.folded
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "params.yaml").write_text("{}\n", encoding="utf-8")
+    payload = parse_stdout_json(run_cadx(tmp_path, "run", str(design), "--params", "params.yaml"))
+    run_dir = tmp_path / payload["artifact_dir"]
+
+    check = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir,
+            f"""
+            units: mm
+            checks:
+              - id: bracket_dfm
+                type: manufacturability
+                object: obj.bracket
+                thickness: {thickness}
+                rules:
+                  - rule: min_flange
+                    min: 15
+                    blank_length: {developed_length}
+            """,
+        )
+    )
+    assert check["status"] == "fail"
+    assert "feat.bracket_bend_0" in _violation_features(check, "min_flange")
+
+
+# --- ADR 0043: bend-radius default policy (D-021) ----------------------------
+
+
+def test_min_bend_radius_explicit_sub_t_min(tmp_path):
+    """An explicit sub-thickness ``min`` admits a fab house's verified radius.
+
+    The 1.0 t default floor rejects SendCutSend's verified 0.81 mm inside radius
+    on 2.29 mm stock. A design working to that published radius table opts in
+    with ``min: 0.81``: a 0.81 mm bend then PASSES, while a 0.5 mm bend (below
+    the explicit min) still FAILS. Without the explicit min, the conservative
+    default would reject even the verified 0.81 mm radius.
+    """
+
+    def bend_radius_feature(radius: float) -> str:
+        return textwrap.dedent(
+            f"""
+            publish_feature(
+                "the_bend",
+                kind="bend",
+                inside_radius={radius},
+                center=[0, 0, 2],
+                source_object="obj.plate",
+            )
+            """
+        )
+
+    explicit_min_rules = """
+        units: mm
+        checks:
+          - id: plate_dfm
+            type: manufacturability
+            object: obj.plate
+            thickness: 2.29
+            rules:
+              - rule: min_bend_radius
+                min: 0.81
+        """
+
+    # Verified 0.81 mm radius passes under the explicit 0.81 mm min.
+    run_dir = _run_model(tmp_path, bend_radius_feature(0.81))
+    check = _only_check(_evaluate(tmp_path, run_dir, explicit_min_rules))
+    assert check["status"] == "pass"
+    assert _violation_features(check, "min_bend_radius") == set()
+
+    # A 0.5 mm radius, below the explicit min, still fails.
+    run_dir2 = _run_model(tmp_path, bend_radius_feature(0.5))
+    check2 = _only_check(_evaluate(tmp_path, run_dir2, explicit_min_rules))
+    assert check2["status"] == "fail"
+    assert "feat.the_bend" in _violation_features(check2, "min_bend_radius")
+
+    # Documented motivation: without the explicit min, the conservative 1.0 t
+    # default floor (2.29 mm here) rejects even the verified 0.81 mm radius.
+    run_dir3 = _run_model(tmp_path, bend_radius_feature(0.81))
+    check3 = _only_check(
+        _evaluate(
+            tmp_path,
+            run_dir3,
+            """
+            units: mm
+            checks:
+              - id: plate_dfm
+                type: manufacturability
+                object: obj.plate
+                thickness: 2.29
+                rules:
+                  - rule: min_bend_radius
+            """,
+        )
+    )
+    assert check3["status"] == "fail"

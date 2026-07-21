@@ -100,7 +100,20 @@ check `type`s:
 - `stability` — the projected center of mass lies inside a support polygon.
 - `bend` — sheet-metal bend count/angle/radius/direction from `bends.json`.
 - `manufacturability` — laser/sheet DFM rules (min hole diameter, slot width,
-  web, hole-to-edge, bend radius, hole-to-bend) parameterized by thickness.
+  web, hole-to-edge, bend radius, hole-to-bend, min flange) parameterized by
+  thickness. Each rule's limit is an absolute `min` (mm) or `factor * thickness`.
+  - `min_bend_radius` defaults to a **conservative** `1.0 * thickness` floor. A
+    fab house often forms tighter than that generic floor (e.g. SendCutSend
+    verifies a 0.81 mm inside radius on 2.29 mm 5052, ~0.35 t). A design working
+    to a shop's **published radius table** must pass an explicit `min` to admit
+    the verified tighter radius (`min: 0` disables the rule). The default is
+    never silently weakened, so a design that declares no verified radius stays
+    protected.
+  - `min_flange` checks every flange of a bent part (each outer leg and each
+    interior web of a U-channel) against a minimum formable length, defaulting
+    to `4.0 * thickness`. It reads the published `bend` features (flat-pattern
+    frame) and the developed `blank_length` supplied on the rule; without
+    `blank_length` only the interior webs are checked.
 - `parametric` — re-run the design across multiple parameter sets and aggregate
   ordinary sub-checks (tolerance/stack-up studies); see `cadx sweep`.
 

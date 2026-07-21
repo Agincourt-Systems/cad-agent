@@ -5,8 +5,8 @@ pure-Python rules over ``spatial.json`` features and object bounding boxes. No C
 kernel is needed: a hole's diameter, a feature's center and axis, and the owning
 object's bounding box are enough to flag the common laser/waterjet DFM violations
 a shop like SendCutSend rejects — undersized holes, holes/slots too close to an
-edge or to each other, and (for explicitly published ``bend`` features) minimum
-bend radius and hole-to-bend distance.
+edge or to each other, and (for published ``bend`` features) minimum bend
+radius, hole-to-bend distance, and minimum flange length.
 
 Each rule's limit is either an explicit absolute ``min`` or ``factor * thickness``
 (defaulting to the per-rule factor in ``DEFAULT_FACTORS``); thickness defaults to
@@ -27,6 +27,19 @@ from typing import Any
 
 
 # Default rule limits as a multiple of material thickness.
+#
+# ``min_bend_radius`` defaults to 1.0 t: a deliberately conservative generic
+# floor for a design that declares no verified press-brake radius. Real fab
+# houses form tighter (SendCutSend verifies 0.81 mm inside radius on 2.29 mm
+# 5052, ~0.35 t); a design working to a shop's published radius table opts into
+# that tighter radius with an explicit ``min`` on the rule (ADR 0043, D-021). The
+# default is never silently weakened — ``min`` (including ``min: 0`` to disable)
+# always wins in ``_limit``.
+#
+# ``min_flange`` defaults to 4.0 t: a widely cited press-brake rule of thumb for
+# the minimum formable leg (roughly half an ~8 t air-bend die opening plus the
+# bend radius). A flange shorter than this has nothing for the tooling to grip,
+# so the bend will not form cleanly. Conservative and overridable by ``min``.
 DEFAULT_FACTORS = {
     "min_hole_diameter": 1.0,
     "min_slot_width": 1.0,
@@ -34,6 +47,7 @@ DEFAULT_FACTORS = {
     "hole_to_edge": 1.0,
     "min_bend_radius": 1.0,
     "hole_to_bend": 2.0,
+    "min_flange": 4.0,
 }
 
 _CYLINDRICAL = {"cylindrical_hole", "cylindrical_boss"}
@@ -236,8 +250,106 @@ def _rule_min_web(rule, features, index, check):
     return violations
 
 
+def _bend_position(feature: dict[str, Any]) -> float | None:
+    """Developed-axis position (x) of a bend line in the flat-pattern frame.
+
+    Bends published by ``publish_sheet_metal`` (ADR 0033) run across the blank
+    width along the local y with a midpoint ``center`` at ``[bend_x, y_mid, 0]``,
+    so the developed (flange) axis is x and the bend's position is ``center[0]``.
+    Falls back to the midpoint of the 2D ``line`` endpoints when no center is
+    published. Returns ``None`` when neither locates the bend.
+    """
+
+    center = feature.get("center")
+    if isinstance(center, (list, tuple)) and len(center) >= 1:
+        try:
+            return float(center[0])
+        except (TypeError, ValueError):
+            pass
+    line = feature.get("line")
+    if isinstance(line, (list, tuple)) and len(line) == 2:
+        try:
+            return (float(line[0][0]) + float(line[1][0])) / 2.0
+        except (TypeError, ValueError, IndexError):
+            return None
+    return None
+
+
+def _rule_min_flange(rule, features, index, check):
+    """Every flange along a bent strip must be long enough to form (D-022).
+
+    A flange is the strip of blank between two consecutive *boundaries* measured
+    along the developed (flange) axis x: the boundaries are the leading blank edge
+    (``x = 0``), each bend line (sorted by developed position), and the trailing
+    blank edge (``x = blank_length``). Each segment's length must clear the limit.
+    A segment bounded by two bends is the **interior web** of a U-channel (cited
+    naming both bends); a segment bounded by a blank edge is an **outer flange**
+    (cited naming the one bend).
+
+    ``blank_length`` (the developed length) is a rule parameter because the flat
+    blank extent is not recoverable from ``spatial.json`` — the published object's
+    bbox is the folded solid, whose smallest dimension is a flange, not the blank.
+    When ``blank_length`` is absent only the interior webs (bend-to-bend, needing
+    no blank edge) are checked; the outer flanges are skipped (documented subset).
+    """
+
+    # Group bend features by their owning object: flanges only make sense within a
+    # single blank, and one run may publish several sheet-metal parts.
+    by_object: dict[str, list[dict[str, Any]]] = {}
+    for feature in features:
+        if feature.get("kind") != "bend":
+            continue
+        position = _bend_position(feature)
+        if position is None:
+            continue
+        source = feature.get("source_object")
+        by_object.setdefault(source if isinstance(source, str) else "", []).append(
+            {"id": feature.get("id"), "position": position, "feature": feature}
+        )
+
+    blank_length = rule.get("blank_length")
+
+    violations = []
+    for source, bends in by_object.items():
+        bends.sort(key=lambda entry: entry["position"])
+        # A rule limit is resolved per owning object (thickness may differ), using
+        # the same absolute-``min`` / ``factor * thickness`` forms as every rule.
+        owning = _owning_object(index, bends[0]["feature"])
+        limit = _limit(rule, _resolve_thickness(check, owning))
+        if limit is None:
+            continue
+
+        # Build the ordered boundary list: blank edge, each bend, blank edge. The
+        # edges carry no feature id (``None``); a bend carries its id so a short
+        # segment cites the bend(s) bounding it.
+        boundaries: list[tuple[float, str | None]] = []
+        if blank_length is not None:
+            boundaries.append((0.0, None))
+        boundaries.extend((entry["position"], entry["id"]) for entry in bends)
+        if blank_length is not None:
+            boundaries.append((float(blank_length), None))
+        # Keep the list sorted by position so out-of-range bends (beyond the blank)
+        # or an unsorted publish order cannot scramble the segment lengths.
+        boundaries.sort(key=lambda item: item[0])
+
+        for (start_pos, start_id), (end_pos, end_id) in zip(boundaries, boundaries[1:]):
+            length = end_pos - start_pos
+            cited = [feature_id for feature_id in (start_id, end_id) if feature_id is not None]
+            if not cited:
+                continue  # Cannot happen (two edges never adjacent), but guard anyway.
+            if length < limit:
+                violations.append(_violation(rule["rule"], cited, length, limit))
+    return violations
+
+
 def _rule_min_bend_radius(rule, features, index, check):
-    """An explicitly published bend feature with an inside radius below the limit."""
+    """An explicitly published bend feature with an inside radius below the limit.
+
+    The limit defaults to ``1.0 * thickness`` (``DEFAULT_FACTORS``), a conservative
+    generic floor. A design working to a fab house's published radius table (e.g.
+    SendCutSend's verified 0.81 mm inside radius on 2.29 mm 5052, below 1.0 t) MUST
+    pass an explicit ``min`` on the rule to admit that verified tighter radius; the
+    default is not silently weakened. ``min: 0`` disables the rule (D-021)."""
 
     violations = []
     for feature in features:
@@ -293,6 +405,7 @@ _RULES = {
     "min_web": _rule_min_web,
     "min_bend_radius": _rule_min_bend_radius,
     "hole_to_bend": _rule_hole_to_bend,
+    "min_flange": _rule_min_flange,
 }
 
 
