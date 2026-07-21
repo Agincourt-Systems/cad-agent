@@ -585,6 +585,12 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
     placement = entry.get("placement")
     if isinstance(obj, dict):
         normalized = dict(obj)
+        # ADR 0049 (D-025): capture the part-frame bbox BEFORE the placement
+        # translation shifts the world bbox into the assembly frame. A synthetic
+        # publication's authored bbox is already at identity, so it is the
+        # part-frame box verbatim.
+        if "bbox" in normalized:
+            normalized["bbox_local"] = _normalize_bbox(obj["bbox"])
         position = _placement_position(placement)
         if position is not None and "bbox" in normalized:
             normalized["bbox"] = _translate_bbox(normalized["bbox"], position)
@@ -592,8 +598,20 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
         placed = _placed_object(entry)
         bbox_method = getattr(placed, "bounding_box", None)
         bbox = _normalize_bbox(bbox_method() if callable(bbox_method) else getattr(placed, "bbox", {}))
+        # ADR 0049 (D-025): the part-frame bbox is the bounding box of the
+        # UNPLACED authored geometry (identity placement). This is measured
+        # directly rather than by un-rotating the world AABB, which is not
+        # invertible once the orientation has been collapsed into an
+        # axis-aligned box. Rotation baked into the authored solid stays here;
+        # only the placement (mate/``placement=``) transform is removed.
+        local = entry["object"]
+        local_bbox_method = getattr(local, "bounding_box", None)
+        bbox_local = _normalize_bbox(
+            local_bbox_method() if callable(local_bbox_method) else getattr(local, "bbox", {})
+        )
         normalized = {
             "bbox": bbox,
+            "bbox_local": bbox_local,
             "mass_properties": _mass_properties(placed, placement),
             "topology": {
                 "solids": _count_selector(placed, "solids"),
@@ -610,6 +628,8 @@ def _normalize_published(entry: dict[str, Any]) -> dict[str, Any]:
         normalized["metadata"] = entry["metadata"]
     if "bbox" in normalized:
         normalized["bbox"] = _normalize_bbox(normalized["bbox"])
+    if "bbox_local" in normalized:
+        normalized["bbox_local"] = _normalize_bbox(normalized["bbox_local"])
     placement_record = _placement_record(placement)
     if placement_record is not None:
         normalized["placement"] = placement_record

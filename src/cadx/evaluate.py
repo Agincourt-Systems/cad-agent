@@ -126,9 +126,59 @@ def _scalar_or_error(observed: Any, check: dict[str, Any]) -> tuple[float | None
         }
 
 
+def _part_frame_target(check: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
+    """Resolve the effective target path for a check's optional ``frame`` (ADR 0049).
+
+    ``frame`` defaults to ``"world"`` — byte-identical to pre-ADR behavior, the
+    target is used unchanged. ``frame: "part"`` (D-025) measures the same
+    dimension in the part's own frame by rewriting the target's ``bbox`` path
+    segment to ``bbox_local`` (the part-frame bounding box recorded at publish
+    time), so ``obj.x.bbox.size.y`` becomes ``obj.x.bbox_local.size.y``. Any
+    other value fails the one check loudly with a descriptive error rather than
+    silently measuring in the wrong frame — the exact failure D-025 removes.
+
+    Returns ``(effective_target, None)`` on success or ``(None, error_record)``.
+    """
+
+    frame = check.get("frame", "world")
+    target = check["target"]
+    if frame == "world":
+        return target, None
+    if frame == "part":
+        # Redirect the bbox segment to bbox_local; only the first match is
+        # rewritten so a label literally named "bbox" cannot be corrupted.
+        segments = target.split(".")
+        rewritten = False
+        for index, segment in enumerate(segments):
+            if segment == "bbox":
+                segments[index] = "bbox_local"
+                rewritten = True
+                break
+        if not rewritten:
+            return None, {
+                "id": check["id"],
+                "type": check["type"],
+                "status": "fail",
+                "error": f"frame 'part' requires a bbox target; {target!r} has no 'bbox' segment",
+            }
+        return ".".join(segments), None
+    return None, {
+        "id": check["id"],
+        "type": check["type"],
+        "status": "fail",
+        "error": f"unsupported frame {frame!r}; expected 'world' or 'part'",
+    }
+
+
 def _check_scalar_target(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
     """Evaluate a scalar exact/range check (``dimension`` and ``topology``)."""
 
+    effective_target, frame_error = _part_frame_target(check)
+    if frame_error is not None:
+        return frame_error
+    # Resolve against the (possibly frame-rewritten) target without mutating the
+    # caller's check dict.
+    check = {**check, "target": effective_target}
     observed, error = _resolve_dimension_or_error(spatial, check)
     if error is not None:
         return error
