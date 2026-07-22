@@ -116,12 +116,41 @@ def _thickness_axis(obj: dict[str, Any]) -> int | None:
     return min(range(3), key=lambda axis: size[axis])
 
 
+def _sheet_meta(obj: dict[str, Any] | None) -> dict[str, Any]:
+    """The owning object's ``sheet`` metadata block (ADR 0050), or ``{}``.
+
+    ``publish_sheet_metal`` serializes ``{"blank_length", "blank_width",
+    "thickness"}`` for every part built through the sheet-metal API, so the DFM
+    rules can read the flat blank's true dimensions without explicit check
+    parameters. A non-sheet part (or a pre-ADR-0050 record) has no block and
+    every caller falls back to its previous behavior.
+    """
+
+    if obj is None:
+        return {}
+    metadata = obj.get("metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    sheet = metadata.get("sheet")
+    return sheet if isinstance(sheet, dict) else {}
+
+
 def _resolve_thickness(check: dict[str, Any], obj: dict[str, Any] | None) -> float | None:
-    """Resolve material thickness: explicit ``check['thickness']`` or the owning
-    object's smallest bounding-box dimension."""
+    """Resolve material thickness: explicit ``check['thickness']``, the owning
+    object's ``sheet`` metadata (ADR 0050), or its smallest bounding-box
+    dimension.
+
+    The bbox fallback is a last resort and is WRONG for folded sheet parts —
+    their smallest bbox dimension is usually the strip width, not the sheet
+    thickness (the trap ADR 0033 documented). The sheet metadata, recorded at
+    authoring time, therefore takes precedence over the bbox whenever present.
+    """
 
     if check.get("thickness") is not None:
         return float(check["thickness"])
+    sheet_thickness = _sheet_meta(obj).get("thickness")
+    if sheet_thickness is not None:
+        return float(sheet_thickness)
     if obj is not None:
         size = obj.get("bbox", {}).get("size")
         if size:
@@ -244,22 +273,33 @@ def _rule_hole_to_edge(rule, features, index, check):
     against the flat-pattern blank instead (ADR 0044), so this rule is coherent
     with ``hole_to_bend`` — which already works in the flat frame — on a bent part.
     Non-``flat`` checks are byte-identical to the pre-ADR-0044 behaviour.
+
+    ADR 0050: the blank extent may come from the check (explicit, wins) or from
+    each feature's owning object's ``sheet`` metadata, which
+    ``publish_sheet_metal`` records at authoring time. ``frame: flat`` alone is
+    therefore enough for parts built through the sheet-metal API. A feature
+    whose object offers no extents at all (a plain part in the same check) falls
+    back to the object-bbox measurement — for a flat plate the bbox IS the
+    blank, so a mixed sheet/plain check stays coherent.
     """
 
-    blank_length = check.get("blank_length")
-    blank_width = check.get("blank_width")
-    flat_frame = (
-        check.get("frame") == "flat" and blank_length is not None and blank_width is not None
-    )
+    check_length = check.get("blank_length")
+    check_width = check.get("blank_width")
+    flat_frame = check.get("frame") == "flat"
 
     violations = []
     for feature in features:
         if feature.get("kind") not in _EDGE_KINDS:
             continue
         obj = _owning_object(index, feature)
+        blank_length = blank_width = None
         if flat_frame:
+            sheet = _sheet_meta(obj)
+            blank_length = check_length if check_length is not None else sheet.get("blank_length")
+            blank_width = check_width if check_width is not None else sheet.get("blank_width")
+        if blank_length is not None and blank_width is not None:
             # Flat-frame clearance needs no folded bbox; thickness still resolves
-            # from the check (explicit) or the owning object when present.
+            # from the check (explicit), the sheet metadata, or the owning object.
             clearance = _flat_edge_clearance(feature, float(blank_length), float(blank_width))
         else:
             if obj is None:
@@ -331,11 +371,12 @@ def _rule_min_flange(rule, features, index, check):
     naming both bends); a segment bounded by a blank edge is an **outer flange**
     (cited naming the one bend).
 
-    ``blank_length`` (the developed length) is a rule parameter because the flat
-    blank extent is not recoverable from ``spatial.json`` — the published object's
-    bbox is the folded solid, whose smallest dimension is a flange, not the blank.
-    When ``blank_length`` is absent only the interior webs (bend-to-bend, needing
-    no blank edge) are checked; the outer flanges are skipped (documented subset).
+    ``blank_length`` (the developed length) resolves per owning object: an
+    explicit rule parameter wins, else the object's ``sheet`` metadata block
+    (ADR 0050) recorded by ``publish_sheet_metal``. Only when neither exists —
+    a hand-published bend on a part that never went through the sheet-metal
+    API — does the rule fall back to the ADR 0043 subset: interior webs only
+    (bend-to-bend, needing no blank edge), outer flanges skipped.
     """
 
     # Group bend features by their owning object: flanges only make sense within a
@@ -352,7 +393,7 @@ def _rule_min_flange(rule, features, index, check):
             {"id": feature.get("id"), "position": position, "feature": feature}
         )
 
-    blank_length = rule.get("blank_length")
+    rule_blank_length = rule.get("blank_length")
 
     violations = []
     for source, bends in by_object.items():
@@ -363,6 +404,12 @@ def _rule_min_flange(rule, features, index, check):
         limit = _limit(rule, _resolve_thickness(check, owning))
         if limit is None:
             continue
+        # ADR 0050: the developed length comes from the rule (explicit, wins) or
+        # from the owning object's sheet metadata, resolved per object so one
+        # check covers several blanks of different lengths.
+        blank_length = rule_blank_length
+        if blank_length is None:
+            blank_length = _sheet_meta(owning).get("blank_length")
 
         # Build the ordered boundary list: blank edge, each bend, blank edge. The
         # edges carry no feature id (``None``); a bend carries its id so a short

@@ -47,6 +47,13 @@ class SheetMetalPart:
     ``publish_sheet_metal`` republishes as ``spatial.json`` features so the DFM
     rules bind. ``holes`` defaults to empty, so a part with no holes is identical
     to a pre-ADR-0040 part.
+
+    ``thickness`` and ``width`` (ADR 0050) record the sheet thickness and blank
+    width the part was authored with, so ``publish_sheet_metal`` can serialize a
+    self-describing ``sheet`` metadata block (blank extents + thickness) into
+    ``spatial.json`` and the DFM rules need no explicit ``thickness`` /
+    ``blank_length`` / ``blank_width`` parameters. Both default to ``None`` so a
+    hand-built ``SheetMetalPart`` remains valid and simply gets no block.
     """
 
     developed_length: float
@@ -55,6 +62,8 @@ class SheetMetalPart:
     bend_lines: list[Any]
     bends: list[dict[str, Any]]
     holes: list[dict[str, Any]] = field(default_factory=list)
+    thickness: float | None = None
+    width: float | None = None
 
 
 def _bend_allowance(angle_deg: float, inside_radius: float, k_factor: float, thickness: float) -> float:
@@ -454,6 +463,8 @@ def bend_chain(
         bend_lines=bend_lines,
         bends=bend_rows,
         holes=resolved_holes,
+        thickness=thickness,
+        width=width,
     )
 
 

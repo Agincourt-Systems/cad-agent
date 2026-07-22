@@ -246,6 +246,25 @@ def publish_sheet_metal(
     if placement is not None and mate is not None:
         raise ValueError("publish_sheet_metal() accepts either placement or mate, not both")
 
+    # ADR 0050: serialize the flat blank's own description — developed length,
+    # blank width, sheet thickness — as a ``sheet`` metadata block, so the DFM
+    # rules (min_flange's blank_length, hole_to_edge's frame:flat extents, every
+    # thickness-relative limit) read the facts from ``spatial.json`` instead of
+    # requiring explicit check parameters. The folded solid's smallest bbox
+    # dimension is NOT the thickness (on most folded parts it is the strip
+    # width), so without this block the thickness fallback is silently wrong. A
+    # caller-supplied ``sheet`` metadata key wins; a hand-built SheetMetalPart
+    # without the ADR 0050 fields gets no block (both leave behavior exactly as
+    # before this ADR).
+    if "sheet" not in metadata:
+        sheet: dict[str, Any] = {"blank_length": float(part.developed_length)}
+        if getattr(part, "width", None) is not None:
+            sheet["blank_width"] = float(part.width)
+        if getattr(part, "thickness", None) is not None:
+            sheet["thickness"] = float(part.thickness)
+        if len(sheet) == 3:
+            metadata["sheet"] = sheet
+
     entry: dict[str, Any] = {
         "label": label,
         "role": role,

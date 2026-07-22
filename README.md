@@ -112,8 +112,14 @@ check `type`s:
   - `min_flange` checks every flange of a bent part (each outer leg and each
     interior web of a U-channel) against a minimum formable length, defaulting
     to `4.0 * thickness`. It reads the published `bend` features (flat-pattern
-    frame) and the developed `blank_length` supplied on the rule; without
-    `blank_length` only the interior webs are checked.
+    frame) and the developed `blank_length`; without a blank length only the
+    interior webs are checked.
+  - Parts published through `publish_sheet_metal` carry a `sheet` metadata
+    block (`blank_length`, `blank_width`, `thickness`), so `min_flange`,
+    `hole_to_edge` with `frame: flat`, and every thickness-relative limit
+    resolve those facts automatically; explicit check/rule parameters always
+    win. Hand-published features on non-sheet parts still need the explicit
+    parameters.
 - `parametric` — re-run the design across multiple parameter sets and aggregate
   ordinary sub-checks (tolerance/stack-up studies); see `cadx sweep`.
 
