@@ -413,3 +413,78 @@ Suite 166 → 201 green (+35 tests). Not addressed by design: D-005 mass
 correction workaround is superseded by the real fix; the D-001 build123d
 0.11 API adoption is a recorded follow-up ADR. All ten feature branches
 preserved and pushed.
+
+## 2026-07-21 — ADRs 0040–0050: second arm deficiency round (D-016…D-026)
+
+The downstream robot-arm project verified all fifteen Phase-0 fixes and
+filed eleven new entries (D-016…D-026) from its Phase-3 part-modeling work.
+Same protocol as the first round: four parallel Opus subagent tracks in
+isolated worktrees (pre-assigned ADR numbers, file-ownership boundaries,
+`PYTHONPATH="$PWD/src"` guard against the editable-install trap), Fable
+review of every diff, sequential rebase onto master with a full-suite gate
+before each fast-forward merge (A → B → C → D), plus one coordinator knit
+ADR by Fable at the end. Zero test failures at any gate; the one worktree
+conflict (worker.py, two tracks extending the same call sequence) resolved
+by keeping both changes.
+
+- **Sheet-metal API (0040–0042, track A)**: `bend_chain`/`bend` accept
+  `holes=[...]` in flange-local frames (`flange`, `u`, `v`; round `diameter`
+  or rectangular `length`/`width`); one unfold feeds the DXF cut layer, a
+  boolean subtraction from the folded solid, and flat-frame
+  `kind="cylindrical_hole"`/`"cutout"` spatial features, so the cut file,
+  the DFM rules, and the mass all carry the same holes; folded volume ==
+  developed − hole material exactly; bend-straddling or off-blank holes are
+  clear `ValueError`s (D-019). `publish_sheet_metal` accepts
+  `placement`/`mate` with `publish()`'s exact contract — a clevis can
+  finally be a revolute-mate child through the public API; flat pattern,
+  bends.json, and bend/hole features stay in the flat-pattern frame
+  (D-020). The folded solid's `y in [-width, 0]` extrusion frame is now
+  documented and pinned by tests, with opt-in `center_width=True` (D-024).
+- **Sheet DFM (0043–0044, track B)**: new `min_flange` rule checks every
+  developed-strip segment (outer legs and interior webs) against a
+  `4.0*t` default (D-022); the `min_bend_radius` `1.0*t` floor is kept
+  deliberately conservative — a fab house's verified tighter radius (e.g.
+  SendCutSend 0.81 mm on 2.29 mm 5052) opts in via explicit `min`, pinned
+  by test, never silently weakened (D-021); folded bend arcs no longer
+  masquerade as phantom `slot` features — the discriminator is concentric
+  same-axis-line partial cylinders at different radii (a real obround
+  slot's ends are equal-radius on displaced axes), corroborated against
+  the published bend table; `hole_to_edge` gains `frame: flat` so it runs
+  coherently with `hole_to_bend` on bent parts (D-023).
+- **Materials/aggregates (0045–0046, track C)**: a declared material that
+  resolves to no density (and no explicit `density=`) now emits a
+  structured `material_unresolved` warning in diagnostics — a massless
+  link can no longer ship silently past a warnings-watching gate (D-016);
+  the `assembly` block is self-describing about role filtering
+  (`included_roles` + `excluded` `{label, role}` list) and a new
+  `assembly_options(include_roles=[...])` declaration opts fixtures into
+  mass/CoM/inertia consistently (D-026).
+- **Frames/checks (0047–0049, track D)**: `inertia_link_frame` (+
+  `_semantics`, + mass-scaled g·mm² variant when density resolved) emits
+  the tensor rotated into the part's body frame `Rᵀ·I·R`, with R extracted
+  via build123d itself so the Euler convention cannot drift (D-017); mate
+  records gain `origin_in_parent`/`axis_in_parent` (rotation-only on the
+  axis vector; root-parented == world, pinned) for direct URDF `<origin>`/
+  `<axis>` consumption (D-018); dimension checks accept `frame: part`
+  backed by a new `bbox_local` measured from the unplaced solid — a
+  revolute-posed 60 mm platform reads 60.0, not the 84.85 world-AABB
+  artifact (D-025).
+- **Self-describing blank (0050, Fable knit)**: tracks A and B each shipped
+  complete but left the same residual — DFM facts about the flat blank had
+  to be passed explicitly because `spatial.json` never recorded them.
+  `publish_sheet_metal` now serializes a `sheet` metadata block
+  (`blank_length`/`blank_width`/`thickness`); `min_flange`, `frame: flat`
+  `hole_to_edge`, and `_resolve_thickness` fall back to it (explicit
+  parameters always win). This also retires the ADR 0033 thickness trap:
+  the folded bbox minimum is the strip WIDTH on most folded parts, and is
+  now the last resort instead of the first fallback.
+
+Suite 201 → 259 green (+58 tests; 254 from the four tracks, 5 from the
+knit). Review notes: Opus handled all four tracks with no rescues; my
+integration work was the worker.py conflict resolution, the
+spec-file-conflict protocol (agent snapshots predated the canonical
+D-016…D-026 spec commit — one track re-authored entries locally and was
+told mid-flight to drop them; all rebased clean), and ADR 0050. Residuals
+recorded honestly in AARs: wrapped (bend-straddling) cutouts unsupported;
+flat-frame projection of auto-detected folded-frame holes; Track D AARs
+await a downstream URDF consumption cycle.
