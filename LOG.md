@@ -488,3 +488,69 @@ told mid-flight to drop them; all rebased clean), and ADR 0050. Residuals
 recorded honestly in AARs: wrapped (bend-straddling) cutouts unsupported;
 flat-frame projection of auto-detected folded-frame holes; Track D AARs
 await a downstream URDF consumption cycle.
+## 2026-07-24 — ADRs 0051–0057: third arm deficiency round (D-027…D-034)
+
+The downstream robot-arm project filed its Phase-6 rollup: 8 open items,
+all MINOR. D-030 (URDF serializer) is their own Phase-5 layer by design.
+We fixed the other seven as ADRs 0051–0057, in four parallel Opus agent
+tracks on isolated worktrees, with strict red-green TDD per ADR.
+
+- **ADR 0051 (D-029)** — `opus/adr-0051-detected-feature-dedup`. STEP
+  auto-detection re-observed `holes=`-authored bores in the folded frame
+  (usually as `cylindrical_boss`) and false-positived `hole_to_bend` /
+  `hole_to_edge`. Fix: suppress the re-detection at feature-merge time,
+  gated on the part having published bends AND authored holes AND a
+  radius match within 0.05 mm; the authored hole still gets
+  `confirmed_by_detection`. Escape hatch: `exclude_detected: true` on
+  manufacturability checks. `hole_to_bend` now has a provable green path
+  on hole-bearing bent parts.
+- **ADR 0052 (D-027)** — `opus/adr-0052-view-cone-check`. New
+  `view_cone` check: apex (point or `obj.<label>.center` reference),
+  axis, `half_angle_deg`, targets tested by 9 bbox points (8 corners +
+  center, all must pass), optional `occluders` via segment-vs-AABB slab
+  test that errs toward over-reporting occlusion. Malformed config fails
+  the check loudly.
+- **ADR 0053 (D-028)** — `opus/adr-0053-mate-placement-conflict-warning`.
+  A mate poses with `located()`, which discards the shape's own
+  `.location`. Now emits a `placement_overridden_by_mate` warning when a
+  mated part carries a non-identity own transform. Positioning behavior
+  unchanged; warning-only by design.
+- **ADR 0054 (D-034)** — `opus/adr-0054-world-joint-frames`. Mate records
+  gain `joint_world` and `joint_world_zero`: a world point ON the joint
+  axis plus the world axis direction, at the posed and zero
+  configurations. Revolute frames coincide (rotation about own Z);
+  prismatic origin slides by travel. Points full-transform, axes
+  rotation-only.
+- **ADR 0055 (D-031)** — `opus/adr-0055-density-unit-contract`. The
+  `density=` contract is now explicit: g/mm³, documented in `publish()`
+  and README. New `density_unit=` ("g/mm^3" default, "kg/mm^3" ×1000)
+  normalizes at publish time and records `density_unit_declared`;
+  unknown unit raises at the design line. Mass/inertia labels can no
+  longer be silently wrong by 1000×.
+- **ADR 0056 (D-033)** — `opus/adr-0056-robotics-inertia-guidance`.
+  `inertia_link_frame_mass_semantics.recommended_use` points robotics
+  consumers at the body-frame mass-scaled tensor; new
+  `docs/inertia-consumers.md` gives the worked 30°-rotated example, the
+  three-tensor trap, and the exact URDF `<inertial>` recipe with
+  g·mm² → kg·m² conversion.
+- **ADR 0057 (D-032)** — `opus/adr-0057-feature-tolerance-metadata`.
+  `publish_feature(..., tolerance={fit, nominal, tol_plus, tol_minus,
+  note})` with a closed key set validated loudly at publish time; the
+  dict rides the existing feature passthrough into `spatial.json`, and
+  `bom.json` gains a per-run `tolerances` rollup. ISO 286 resolution and
+  STEP/DXF GD&T embedding are documented out of scope.
+
+Process notes. Two agent tracks stopped mid-flight "waiting on a
+monitor" after launching their full-suite runs; both were resumed with
+instructions to run the gate in the foreground and finished cleanly —
+same lesson as the pipe-masking issue last round: subagents must block
+on their own gates. Track C's full-suite run caught a real pre-existing
+trap: importing the `cadx.publish` module rebinds the package attribute
+`publish` from the re-exported registry function to the module, so
+`from cadx import publish` is import-order-dependent under the full
+suite (fixed in-track by importing from `cadx.registry`; a repo-level
+rename remains open). Merge protocol as before: sequential
+rebase-onto-master A→B→C→D with a full-suite gate per merge
+(265 → 276 → 290 → 301 green), fast-forward merges only, feature
+branches preserved. Suite grew 259 → 301.
+
