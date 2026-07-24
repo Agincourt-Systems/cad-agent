@@ -14,6 +14,38 @@ Severity protocol:
   acknowledged.
 - MINOR / PAPERCUT: log immediately, surface in batch at the next phase gate.
 
+
+---
+
+# ROLLUP (Phase 6, 2026-07-23)
+
+**34 deficiencies logged across 6 phases. 26 FIXED upstream (two fix
+rounds: cadx ADRs 0030–0039 and 0040–0050, both fully re-verified by our
+probe/design suites). 8 OPEN, all MINOR — none blocks fabrication,
+assembly, or the digital twin.**
+
+| Status | IDs | Count |
+|---|---|---|
+| FIXED (round 1, `fba4d36`) | D-001..D-015 | 15 |
+| FIXED (round 2, `27eacfd`) | D-016..D-026 | 11 |
+| OPEN (MINOR) | D-027, D-028, D-029, D-030, D-031, D-032, D-033, D-034 | 8 |
+
+**By original severity:** 6 MAJOR (D-001, D-003, D-004, D-013, D-019,
+D-020 — all fixed), 0 BLOCKER, rest MINOR/PAPERCUT.
+
+**Highest-value catches (silent-wrongness class):**
+1. D-001 — interference check false-passing on overlapping parts under a
+   declared-supported dependency version.
+2. D-019 — flat DXFs without holes: an undrillable blank a shop would
+   cut without complaint.
+3. D-004 — bend-safety DFM rules that could never fire on the real flow.
+4. D-031/D-033 — inertia units/semantics labels that read plausibly and
+   are wrong for a naive consumer.
+
+**Open-item disposition:** D-029 (holes×flat-DFM composition) is the one
+most worth an upstream third round; D-030 is intentionally ours
+(urdfgen/); the rest are documentation/ergonomics.
+
 ---
 
 ## D-001 — Unbounded build123d dependency breaks cadx; interference check silently passes
@@ -307,7 +339,7 @@ Severity protocol:
 
 ## D-016 — Unknown material name resolves silently to no density / no mass
 
-> **STATUS: OPEN (found while verifying the D-008 fix, cadx fba4d36).**
+> **STATUS: FIXED upstream (ADR 0045, cadx 27eacfd): material_unresolved warning emitted with label/material/message; known materials stay silent. Verified red-green.**
 
 - **ID:** D-016 · **Phase:** 0 (fix verification) · **Severity:** MINOR
 - **Operation:** `publish(material="unobtanium")` (a typo'd alloy name).
@@ -323,7 +355,7 @@ Severity protocol:
 
 ## D-017 — Inertia tensor still world-axes at placed pose, not link frame
 
-> **STATUS: OPEN (residual of the D-007 fix; semantics are now honest, consumption still manual).**
+> **STATUS: FIXED upstream (ADR 0047): inertia_link_frame (geometric) + inertia_link_frame_mass (mass-scaled) with semantics. Verified: 30-deg-rotated plate link-frame Ixy ~ 0, mass Ixx = 17118 g*mm^2 = hand calc. Residual units-label bug: D-031.**
 
 - **ID:** D-017 · **Phase:** 0 (fix verification) · **Severity:** MINOR
 - **Operation:** Consume per-part inertia for URDF `<inertial>`.
@@ -339,7 +371,7 @@ Severity protocol:
 
 ## D-018 — Joint axis/origin exported in world frame only
 
-> **STATUS: OPEN (residual of the D-013 fix).**
+> **STATUS: FIXED upstream (ADR 0048): origin_in_parent/axis_in_parent = parent^-1 compose world, hand-verified with a rotated parent; round-trip exact; axis rotation-only as it should be.**
 
 - **ID:** D-018 · **Phase:** 0 (fix verification) · **Severity:** PAPERCUT
 - **Operation:** Read parent-relative joint origin/axis (URDF convention).
@@ -351,7 +383,7 @@ Severity protocol:
 
 ## D-019 — Flat-pattern DXF contains no holes or cutouts (bare outline only)
 
-> **STATUS: OPEN. Found Phase 3 (shoulder group), cadx fba4d36.**
+> **STATUS: FIXED upstream (ADR 0040, cadx 27eacfd): holes= API unfolds cutouts into DXF cut layer, folded solid, and spatial features. Verified: far-side hole at developed x=65.180 = flange 40 + BA 5.180 + 20 (shift == BA exactly); folded volume reflects bores to 1e-4. Residual composition gap: D-029.**
 
 - **ID:** D-019 · **Phase:** 3 (part modeling) · **Severity:** MAJOR
 - **Operation:** Export the SendCutSend cut DXF for a bent bracket with
@@ -374,7 +406,7 @@ Severity protocol:
 
 ## D-020 — `publish_sheet_metal` accepts neither placement nor mate
 
-> **STATUS: OPEN. Found independently by two Phase 3 groups (elbow EF-2, shoulder SU-1).**
+> **STATUS: FIXED upstream (ADR 0041, cadx 27eacfd): placement/mate passthrough on publish_sheet_metal. Verified on real geometry: all four design groups refactored off their workarounds; J2 mates on upperarm_link, J5 on wrist_clevis; 51 design tests green.**
 
 - **ID:** D-020 · **Phase:** 3 · **Severity:** MAJOR
 - **Operation:** Pose a folded sheet part in an assembly / make it the
@@ -393,7 +425,7 @@ Severity protocol:
 
 ## D-021 — DFM `min_bend_radius` default (1.0·t) rejects verified press-brake radii
 
-> **STATUS: OPEN (MINOR).**
+> **STATUS: FIXED upstream (ADR 0043, documented policy): default stays 1.0*t (conservative), explicit min opt-in required for verified press-brake radii; 0.81 passes with min: 0.81, 0.5 still fails.**
 
 - **ID:** D-021 · **Phase:** 3 · **Severity:** MINOR
 - Default floor = 1.0×thickness (2.29 mm) fails every bend at the
@@ -406,7 +438,7 @@ Severity protocol:
 
 ## D-022 — No `min_flange` DFM rule
 
-> **STATUS: OPEN (MINOR).**
+> **STATUS: FIXED upstream (ADR 0043): min_flange rule fires red-green on the real flow, naming offending bends; blank segments resolved from ADR-0050 metadata.**
 
 - **ID:** D-022 · **Phase:** 3 · **Severity:** MINOR
 - `params.sheet.design_rules.min_flange_length` (8.28 mm verified) has no
@@ -416,7 +448,7 @@ Severity protocol:
 
 ## D-023 — DFM frame split: bend rules use flat frame, edge/web rules use folded bbox
 
-> **STATUS: OPEN (MINOR).**
+> **STATUS: FIXED upstream (ADR 0044): zero phantom slots on folded parts; frame: flat runs hole_to_bend + hole_to_edge + min_web together coherently. Composition caveat with the D-019 holes API: D-029.**
 
 - **ID:** D-023 · **Phase:** 3 · **Severity:** MINOR
 - `hole_to_bend` evaluates in the flat-pattern frame while
@@ -430,7 +462,7 @@ Severity protocol:
 
 ## D-024 — `bend_chain` extrudes width along −Y (undocumented)
 
-> **STATUS: OPEN (PAPERCUT).**
+> **STATUS: FIXED upstream (ADR 0042): width frame documented; center_width=True centers (y in [-w/2,+w/2]), volume identical, flat pattern unmoved.**
 
 - **ID:** D-024 · **Phase:** 3 · **Severity:** PAPERCUT
 - Folded solid occupies Y ∈ [−width, 0]; silently caused a width-sized
@@ -438,7 +470,7 @@ Severity protocol:
 
 ## D-025 — Dimension checks are world-AABB only; no part-frame target
 
-> **STATUS: OPEN (MINOR).**
+> **STATUS: FIXED upstream (ADR 0049): bbox_local + frame: part dimension checks measure 60.0000 on a 45-deg-posed 60 mm part; world default preserved; bad frame name errors loudly.**
 
 - **ID:** D-025 · **Phase:** 3 · **Severity:** MINOR
 - A revolute-posed 60 mm platform reads 84.85 mm at 45° because
@@ -448,7 +480,7 @@ Severity protocol:
 
 ## D-026 — Assembly aggregates silently exclude `role="fixture"` parts
 
-> **STATUS: OPEN (MINOR, documented behavior worth a warning).**
+> **STATUS: FIXED upstream (ADR 0046): aggregate self-describing (included_roles/excluded) + include_roles opt-in; fixture-inclusive CoM hand-verified (60.4478 = 6480/107.2).**
 
 - **ID:** D-026 · **Phase:** 3 · **Severity:** MINOR
 - `assembly.mass`/CoM count only final parts (612 g vs true ~711 g with
@@ -456,3 +488,124 @@ Severity protocol:
   knowing this validates the wrong number. **Suggested fix:** aggregate
   metadata listing what was included, or an `include_roles:` option.
 - **Repro:** `designs/base_j1.py`, compare assembly.mass vs summed parts.
+
+## D-027 — No FOV frustum / view-angle / occlusion check primitive
+
+> **STATUS: OPEN (MINOR). Found Phase 3 (wrist group).**
+
+- **ID:** D-027 · **Phase:** 3 · **Severity:** MINOR
+- **Operation:** Verify spec §5.4 (jaw tips inside the camera FOV cone,
+  sightline unobstructed) as a cadx requirement check.
+- **Expected:** A frustum-containment or vector-angle-bound check type.
+- **Actual:** No such primitive; containment was computed as pytest
+  assertions from spatial.json coordinates (published construction cone
+  is geometry only). Plate occlusion of the sightline is not expressible.
+- **Minimal repro:** `designs/wrist_gripper.py` + its test.
+- **Suggested fix:** `view_cone` check: apex frame, axis, half-angle,
+  target labels; optional line-of-sight interference.
+
+## D-028 — Mate silently overwrites a part's own placement
+
+> **STATUS: OPEN (MINOR). Found Phase 3 (wrist group).**
+
+- **ID:** D-028 · **Phase:** 3 · **Severity:** MINOR
+- **Operation:** Publish a part built with its own `Pos(...)` transform
+  AND a mate; expect composition or an error.
+- **Actual:** The mate's `located(placement)` silently replaces the
+  part's own transform — the part lands somewhere else with no warning.
+- **Workaround:** Position exclusively via the mate target frame.
+- **Suggested fix:** Compose, or warn when both are present.
+
+## D-029 — D-019 holes API and `frame: flat` DFM do not compose
+
+> **STATUS: OPEN (MINOR). Found verifying the second fix round (cadx 27eacfd).**
+
+- **ID:** D-029 · **Phase:** 3 (fix verification) · **Severity:** MINOR
+- **Operation:** DFM-check a bent part whose fastener holes were authored
+  via the new `holes=` API, using `frame: flat`.
+- **Expected:** One coherent flat-frame DFM pass over the authored holes.
+- **Actual:** The API-authored bores exist in the folded solid, so STEP
+  auto-detection re-detects them as folded-frame features; `frame: flat`
+  only re-frames the *published* flat holes, so the auto features
+  false-positive `hole_to_bend`/`hole_to_edge` (observed −1.64/−2.5)
+  even when the authored holes are compliant. Exactly the projection
+  ADR 0044 deferred, now reachable through the public holes API.
+- **Minimal repro:**
+  `probes/sheetmetal/probe_11*::test_holes_api_folded_bores_pollute_flat_frame_dfm_B1`.
+- **Workaround:** Suppress auto features in that check (restrict to
+  published features), or accept named false positives knowingly.
+- **Suggested fix:** Auto-detected features on sheet parts should carry
+  flat-frame projections (or be suppressed when they duplicate authored
+  holes).
+- **Addendum (design refactor):** the same root hits the normal
+  run→inspect pipeline: each authored hole re-detects as a world-frame
+  `cylindrical_boss`. Scoping checks with `kind: cylindrical_hole`
+  cleans `min_hole_diameter`/`hole_to_edge`/`min_web`, but
+  `hole_to_bend` needs holes and bends in one unfiltered selection, so
+  its green path is unprovable on hole-bearing bent parts (red cases
+  work). A `detected: true` exclusion filter on checks would close it.
+
+## D-030 — No robot-description serializer; meshes not wired to links
+
+> **STATUS: OPEN (MINOR — planned as our Phase 5 layer).**
+
+- **ID:** D-030 · **Phase:** 3 (fix verification) · **Severity:** MINOR
+- With ADRs 0047/0048 landed, every numeric ingredient for URDF exists in
+  spatial.json, but cadx emits no .urdf/.xacro/.sdf and no object record
+  references its per-part STL/GLB as visual/collision geometry. The
+  remaining work is mechanical serialization; our Phase 5 generator
+  covers it (and is the spec deliverable anyway).
+- **Repro:** any assembly run; grep artifacts for urdf → nothing.
+
+## D-031 — `inertia_link_frame_mass` units label hardcoded "g*mm^2"
+
+> **STATUS: OPEN (MINOR for us; real mislabel upstream).**
+
+- **ID:** D-031 · **Phase:** 3 (fix verification) · **Severity:** MINOR
+  (would be MAJOR for a project not pinned to g/mm3 densities: the
+  self-describing label is confidently wrong by 1000x when the author
+  supplies density in kg/mm3 — silent-wrongness class in metadata.)
+- **Operation:** publish with density in kg/mm3; read
+  inertia_link_frame_mass_semantics.units.
+- **Expected:** Units derived from the density unit, or a documented
+  density-unit contract. **Actual:** always labeled g*mm^2 (and mass
+  labeled grams) regardless.
+- **Why we are safe:** designs/_shared.density() only ever emits g/mm3
+  (converted from the params g/cm3 table), so every ARM6 label is true.
+- **Minimal repro:** design with density=2.7e-6 (kg/mm3): mass=0.0432
+  emitted, labeled grams.
+- **Suggested fix:** declare the density-unit contract in publish() docs
+  and validate, or scale labels from a declared unit.
+
+## D-032 — No tolerance / fit / GD&T representation
+
+> **STATUS: OPEN (MINOR; anticipated by spec §5.2, which pre-approves the sidecar).**
+
+- **ID:** D-032 · **Phase:** 5 · **Severity:** MINOR
+- cadx cannot attach fits (16 H7 bearing seat, 8 g6 dead shaft) to
+  geometry; they live only in `output/TOLERANCES.md`. A STEP consumer
+  never sees them. **Suggested fix:** per-feature tolerance metadata
+  passed through to exports/BOM.
+
+## D-033 — Three coexisting inertia semantics are a consumer trap
+
+> **STATUS: OPEN (MINOR, documentation-class).**
+
+- **ID:** D-033 · **Phase:** 5 · **Severity:** MINOR
+- spatial.json ships world-geometric, link-frame-geometric, and
+  link-frame-mass tensors. `inertia_link_frame_mass` is BODY-frame: using
+  it in a world-aligned frame yields wrong cross-terms for rotated parts.
+  Our generator used world `matrix_of_inertia` × density (verified), but
+  the field trio invites silent wrongness. **Suggested fix:** one
+  documented "use this for robotics" field, or a worked example in docs.
+
+## D-034 — Joint axis world anchor points not directly emitted
+
+> **STATUS: OPEN (MINOR).**
+
+- **ID:** D-034 · **Phase:** 5 · **Severity:** MINOR
+- Mate records give axis directions and parent-relative origins, but no
+  world-frame point on the joint axis; the URDF generator reconstructed
+  them from datums and servo placements. **Suggested fix:** emit the
+  resolved world joint frame (point + axis) per mate at the posed and
+  zero configurations.
