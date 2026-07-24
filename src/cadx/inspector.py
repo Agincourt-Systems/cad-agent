@@ -30,6 +30,14 @@ _DEDUP_SIZE_PROPERTIES = ("diameter", "width", "length")
 # line instead of point-to-point distance.
 _AXIAL_KINDS = {"cylindrical_hole", "cylindrical_boss"}
 
+# Radius tolerance (mm) for recognising a folded-solid re-detection of an
+# authored sheet-metal hole (D-029, ADR 0051). A folded sheet blank's only
+# full-cylinder faces are its authored bores, so a size match on the owning sheet
+# part is a reliable duplicate signal without any cross-frame geometry. Kept in
+# the same 0.05 mm band as _DEDUP_TOLERANCE so the two matchers agree on "same
+# size" and neither ever merges two physically distinct features.
+_SHEET_HOLE_RADIUS_TOLERANCE = 0.05
+
 # Roles that are reference/keep-out geometry rather than physical parts, so they
 # do not contribute to the assembly's aggregate mass. Every other role
 # (including the idiomatic "part" and "final") is a physical part.
@@ -468,6 +476,114 @@ def _is_duplicate(explicit: dict[str, Any], detected: dict[str, Any]) -> bool:
     return _center_distance(explicit_center, detected) <= _DEDUP_TOLERANCE
 
 
+def _authored_sheet_hole_radii(
+    explicit_features: list[dict[str, Any]],
+) -> dict[str, list[float]]:
+    """Map each folded sheet part to the radii of its authored holes (D-029).
+
+    A source object is a folded sheet-metal part when it carries at least one
+    published ``kind="bend"`` feature (ADR 0033). Its authored fastener holes are
+    the ``kind="cylindrical_hole"`` publications on the same object, emitted in
+    the FLAT-pattern frame by the ADR 0040 ``holes=`` API. Returning their radii
+    lets :func:`_is_sheet_hole_redetection` recognise a folded-frame re-detection
+    of the same bore. A part with bends but no authored holes, or holes but no
+    bends, yields no entry — both gates must hold for suppression to fire.
+    """
+
+    sheet_sources = {
+        feature.get("source_object")
+        for feature in explicit_features
+        if feature.get("kind") == "bend" and isinstance(feature.get("source_object"), str)
+    }
+    radii: dict[str, list[float]] = {}
+    for feature in explicit_features:
+        if feature.get("kind") != "cylindrical_hole":
+            continue
+        source = feature.get("source_object")
+        if source not in sheet_sources:
+            continue
+        diameter = feature.get("diameter")
+        if diameter is None:
+            continue
+        try:
+            radii.setdefault(source, []).append(float(diameter) / 2.0)
+        except (TypeError, ValueError):
+            continue
+    return radii
+
+
+def _is_sheet_hole_redetection(
+    detected: dict[str, Any], authored_radii: dict[str, list[float]]
+) -> bool:
+    """True when a detected cylinder re-observes an authored sheet-metal hole.
+
+    D-029: an authored hole (ADR 0040 ``holes=`` API) is published in the
+    flat-pattern frame but is also bored out of the folded solid, so STEP
+    auto-detection re-observes it in the FOLDED frame — usually as a
+    ``cylindrical_boss`` (its through-axis is the thin sheet thickness, far
+    shorter than the part's longest extent, so the "through" test fails). That
+    re-detection cannot deduplicate against the flat publication (different frame,
+    often a different kind), and it false-positives ``hole_to_bend`` /
+    ``hole_to_edge``.
+
+    The discriminator is deliberately a radius match on the owning sheet part, not
+    a cross-frame axis-line match: the flat and folded axes of an angled-flange
+    hole genuinely differ, and reconstructing the fold transform would need the
+    sheet-metal authoring data that lives outside the inspector. It is sufficient
+    because a folded sheet blank's only full-cylinder faces are its authored
+    bores, so a size match on such a part uniquely identifies the duplicate (same
+    sheet-metal-gated reasoning ADR 0044 uses to suppress bend arcs).
+    """
+
+    if not detected.get("detected"):
+        return False
+    if detected.get("kind") not in _AXIAL_KINDS:  # cylindrical_hole / cylindrical_boss
+        return False
+    radii = authored_radii.get(detected.get("source_object"))
+    if not radii:
+        return False
+    diameter = detected.get("diameter")
+    if diameter is None:
+        return False
+    try:
+        radius = float(diameter) / 2.0
+    except (TypeError, ValueError):
+        return False
+    return any(abs(radius - authored) <= _SHEET_HOLE_RADIUS_TOLERANCE for authored in radii)
+
+
+def _confirm_authored_hole(merged: list[dict[str, Any]], detected: dict[str, Any]) -> None:
+    """Mark the authored sheet hole that a suppressed re-detection corroborates.
+
+    Emits the same ``confirmed_by_detection`` signal the ADR 0012 dedup emits, so
+    an agent still learns the authored hole reached the solid even though the
+    re-detection itself is dropped. Picks the first not-yet-confirmed authored hole
+    of matching radius on the same source, so several equal-diameter holes are each
+    confirmed at most once.
+    """
+
+    source = detected.get("source_object")
+    try:
+        radius = float(detected["diameter"]) / 2.0
+    except (KeyError, TypeError, ValueError):
+        return
+    for feature in merged:
+        if feature.get("kind") != "cylindrical_hole" or feature.get("detected"):
+            continue
+        if feature.get("source_object") != source or feature.get("confirmed_by_detection"):
+            continue
+        diameter = feature.get("diameter")
+        if diameter is None:
+            continue
+        try:
+            authored = float(diameter) / 2.0
+        except (TypeError, ValueError):
+            continue
+        if abs(authored - radius) <= _SHEET_HOLE_RADIUS_TOLERANCE:
+            feature["confirmed_by_detection"] = True
+            return
+
+
 def _merge_features(
     explicit_features: list[dict[str, Any]],
     detected_features: list[dict[str, Any]],
@@ -479,15 +595,28 @@ def _merge_features(
     and the publication is marked ``confirmed_by_detection`` so agents can
     distinguish corroborated publications from unverified intent. Unmatched
     features from either channel pass through unchanged.
+
+    ADR 0051 (D-029): a detected cylindrical feature that re-observes an authored
+    sheet-metal hole (see :func:`_is_sheet_hole_redetection`) is dropped even when
+    it does not match the flat publication point-to-point, because it lives in the
+    folded frame and would false-positive the sheet DFM rules. The corroborated
+    authored hole is still marked ``confirmed_by_detection``. This is gated on the
+    part being a folded sheet part that carries authored holes, so non-sheet
+    detection and the ADR 0012 dedup are unchanged.
     """
 
     merged = [dict(feature) for feature in explicit_features]
+    authored_radii = _authored_sheet_hole_radii(explicit_features)
     for detected in detected_features:
         match = next((feature for feature in merged if _is_duplicate(feature, detected)), None)
-        if match is None:
-            merged.append(detected)
-        else:
+        if match is not None:
             match["confirmed_by_detection"] = True
+            continue
+        if _is_sheet_hole_redetection(detected, authored_radii):
+            # Drop the folded-frame duplicate; corroborate the authored hole.
+            _confirm_authored_hole(merged, detected)
+            continue
+        merged.append(detected)
     return merged
 
 

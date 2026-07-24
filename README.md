@@ -120,6 +120,15 @@ check `type`s:
     resolve those facts automatically; explicit check/rule parameters always
     win. Hand-published features on non-sheet parts still need the explicit
     parameters.
+  - Holes authored via the `holes=` API compose cleanly with the sheet DFM
+    rules. The authored hole is bored out of the folded solid, so STEP
+    auto-detection would otherwise re-observe it as a phantom folded-frame
+    `cylindrical_boss` and false-positive `hole_to_bend` / `hole_to_edge`; the
+    inspector now suppresses that duplicate re-detection (marking the authored
+    hole `confirmed_by_detection`), so `hole_to_bend` runs coherently on a
+    hole-bearing bent part with no extra scoping. A check may also set
+    `exclude_detected: true` to drop every auto-detected feature and gate only
+    authored/published geometry.
 - `parametric` — re-run the design across multiple parameter sets and aggregate
   ordinary sub-checks (tolerance/stack-up studies); see `cadx sweep`.
 

@@ -507,16 +507,26 @@ def evaluate_manufacturability(spatial: dict[str, Any], check: dict[str, Any]) -
     Optional ``object``/``kind`` filter the features considered. Each rule entry
     (`{rule, min?, factor?, severity?}`) produces zero or more violations; a
     ``severity: warn`` rule surfaces in ``warnings`` without failing the check.
+
+    ADR 0051 (D-029): ``exclude_detected: true`` drops every auto-detected feature
+    (those the inspector tags ``detected: true``) from the selection before any
+    rule runs — the downstream-requested ``detected: true`` exclusion. It lets an
+    agent scope a check to authored/published features only, which is the escape
+    hatch for a hole modelled as raw build123d geometry on a sheet part (no
+    authored ``cylindrical_hole`` publication for the inspector's automatic
+    suppression to gate on). With the key absent, behavior is byte-identical.
     """
 
     index = _object_index(spatial)
     object_filter = check.get("object")
     kind_filter = check.get("kind")
+    exclude_detected = bool(check.get("exclude_detected"))
     selected = [
         feature
         for feature in spatial.get("features", [])
         if (object_filter is None or feature.get("source_object") == object_filter)
         and (kind_filter is None or feature.get("kind") == kind_filter)
+        and not (exclude_detected and feature.get("detected"))
     ]
 
     # The reported scalar thickness resolves against the check's object when
