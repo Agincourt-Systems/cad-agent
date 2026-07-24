@@ -103,8 +103,12 @@ def test_unknown_density_unit_raises():
     """An unrecognized density_unit raises ValueError at publish time."""
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-    from cadx import publish
-    from cadx.registry import clear_registry
+    # Import from cadx.registry, not `from cadx import publish`: importing the
+    # cadx.publish MODULE (ADR 0029 export plans, done by test_publish.py in the
+    # same pytest process) rebinds the package attribute `cadx.publish` from the
+    # re-exported function to that module, making the package-level import
+    # order-dependent under the full suite.
+    from cadx.registry import clear_registry, publish
 
     clear_registry()
     with pytest.raises(ValueError) as excinfo:
