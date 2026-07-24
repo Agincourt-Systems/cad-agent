@@ -225,6 +225,13 @@ declared relationship is recorded on the spatial object, and cross-part checks
 a combined `assembly.step`/`.stl`/`.glb` and render the whole assembly on the
 contact sheet.
 
+A mate poses the shape absolutely, so a transform baked into the shape itself
+(`Pos(...) * shape`, `shape.move(...)`) is discarded by the mate. When that
+happens the run emits a `placement_overridden_by_mate` warning naming the part
+(the pose is unchanged — mate wins — the warning just makes the dropped own
+transform visible). Use `placement=` for a hand-computed pose, or a `mate=`, but
+do not bake a transform into a shape you also mate.
+
 Kinematic kinds pose the mate about the target frame's local Z axis:
 `kind="revolute"` (`angle` degrees), `kind="prismatic"` (`travel` mm), or
 `kind="cylindrical"` (both), with optional `angle_range`/`travel_range` limits

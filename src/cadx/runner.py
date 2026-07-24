@@ -493,6 +493,40 @@ def _pose_range_warnings(entry: dict[str, Any]) -> list[dict[str, Any]]:
     return warnings
 
 
+def _own_placement_is_nonidentity(obj: Any, tolerance: float = 1e-9) -> bool:
+    """Return True when a real shape carries its own non-identity transform (ADR 0053, D-028).
+
+    A part built as ``Pos(...) * shape`` (or moved/located) records that transform
+    on the build123d object's ``.location``. A mate later poses the shape with
+    ``obj.located(placement)``, which sets the location *absolutely* and discards
+    whatever ``.location`` the shape held — so a non-identity own location is the
+    exact thing a mate silently throws away (D-028).
+
+    The check is total and never raises: any object without a readable
+    ``.location`` (synthetic dicts, kernel-free stubs, anything unexpected)
+    returns ``False``. "Non-identity" means any position or orientation component
+    exceeds ``tolerance`` in absolute value — build123d spells the identity
+    orientation as ``(-0.0, 0.0, -0.0)``, so absolute values make the comparison
+    robust to signed zeros.
+    """
+
+    location = getattr(obj, "location", None)
+    if location is None:
+        return False
+    position = getattr(location, "position", None)
+    orientation = getattr(location, "orientation", None)
+    if position is None:
+        return False
+    components: list[float] = []
+    try:
+        components.extend(float(component) for component in tuple(position))
+        if orientation is not None:
+            components.extend(float(component) for component in tuple(orientation))
+    except (TypeError, ValueError):
+        return False
+    return any(abs(component) > tolerance for component in components)
+
+
 def _resolve_mates(published: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Resolve declarative mates into ordinary placements (ADR 0024).
 
@@ -546,6 +580,20 @@ def _resolve_mates(published: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # with a warning rather than half-placed (ADR 0038 D-013).
                 placement = _mate_placement(entry, parent)
                 frame_export = _mate_frame_export(entry, parent)
+                # ADR 0053 (D-028): a mate poses the shape with located(placement),
+                # which discards any transform baked into the shape's own
+                # .location. Warn — but do not change the pose — when that is
+                # about to silently drop an own placement (e.g. Pos(...)*shape).
+                if _own_placement_is_nonidentity(entry["object"]):
+                    warnings.append(
+                        {
+                            "type": "placement_overridden_by_mate",
+                            "label": label,
+                            "message": f"{label!r} carries its own placement "
+                            f"(Pos/move/located) which the mate on {to!r} discards; "
+                            "the part is posed by the mate only",
+                        }
+                    )
                 entry["placement"] = placement
                 entry["mate_export"] = frame_export
                 warnings.extend(_pose_range_warnings(entry))
