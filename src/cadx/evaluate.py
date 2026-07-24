@@ -917,6 +917,292 @@ def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> d
     }
 
 
+def _view_cone_error(check: dict[str, Any], error: str) -> dict[str, Any]:
+    """Failed ``view_cone`` record for malformed/unresolvable configuration.
+
+    Matches the loud-error contract of ADR 0049 (unknown ``frame:``) and the
+    assembly checks: a mistyped axis/half-angle/target fails this one check with a
+    descriptive message naming the bad value, never a silent pass and never an
+    aborted run.
+    """
+
+    return {"id": check["id"], "type": "view_cone", "status": "fail", "error": error}
+
+
+def _resolve_point(spatial: dict[str, Any], spec: Any) -> tuple[list[float] | None, str | None]:
+    """Resolve a point specification to a world 3-vector, or an error message.
+
+    A point is either an explicit ``[x, y, z]`` list or a reference string. The
+    reference reuses the dimension resolver (``_resolve_dimension``) so any path
+    that lands on a 3-vector works (e.g.
+    ``obj.<label>.mass_properties.center_of_mass``). As a convenience,
+    ``obj.<label>.center`` and ``obj.<label>.bbox.center`` resolve to the midpoint
+    of the object's world bounding box — objects carry a ``bbox`` but no ``center``
+    key, so the midpoint is computed rather than looked up.
+    """
+
+    if isinstance(spec, (list, tuple)):
+        if len(spec) != 3:
+            return None, f"point {spec!r} is not a 3-vector"
+        try:
+            return [float(component) for component in spec], None
+        except (TypeError, ValueError):
+            return None, f"point {spec!r} has non-numeric components"
+
+    if isinstance(spec, str):
+        # Convenience shorthand for a bbox centre: obj.<label>.center or
+        # obj.<label>.bbox.center. Everything between the label and the trailing
+        # "center" must be empty or exactly "bbox".
+        parts = spec.split(".")
+        if len(parts) >= 2 and parts[0] == "obj" and parts[-1] == "center" and parts[2:-1] in ([], ["bbox"]):
+            obj = _object_index(spatial).get(parts[1])
+            if obj is None:
+                return None, f"no object {spec!r}"
+            bbox = obj.get("bbox")
+            if not bbox or "min" not in bbox or "max" not in bbox:
+                return None, f"object {parts[1]!r} has no bbox for center"
+            return [(low + high) / 2 for low, high in zip(bbox["min"], bbox["max"])], None
+        try:
+            value = _resolve_dimension(spatial, spec)
+        except (KeyError, ValueError, IndexError, TypeError) as exc:
+            return None, f"could not resolve point {spec!r}: {exc}"
+        if not isinstance(value, (list, tuple)) or len(value) != 3:
+            return None, f"point {spec!r} did not resolve to a 3-vector"
+        try:
+            return [float(component) for component in value], None
+        except (TypeError, ValueError):
+            return None, f"point {spec!r} resolved to a non-numeric value {value!r}"
+
+    return None, f"unsupported point specification {spec!r}"
+
+
+def _bbox_test_points(bbox: dict[str, list[float]]) -> list[list[float]]:
+    """Return the 8 corners AND the centre of a bounding box (9 points).
+
+    ADR 0052 tests a target's whole extent, not just its centre: a jaw whose
+    centre is visible but whose tip pokes out of the FOV cone must fail. The
+    corner index bits select the low/high face on each axis.
+    """
+
+    low = bbox["min"]
+    high = bbox["max"]
+    corners = [
+        [
+            high[0] if index & 1 else low[0],
+            high[1] if index & 2 else low[1],
+            high[2] if index & 4 else low[2],
+        ]
+        for index in range(8)
+    ]
+    center = [(low[axis] + high[axis]) / 2 for axis in range(3)]
+    return corners + [center]
+
+
+def _segment_intersects_aabb(
+    start: list[float], end: list[float], low: list[float], high: list[float], eps: float = 1e-9
+) -> bool:
+    """Whether the open segment ``start``->``end`` crosses an axis-aligned box.
+
+    Slab method: intersect the segment's parameter range ``[0, 1]`` with each
+    axis slab of the box. A positive-length overlap strictly inside the open
+    segment counts as a crossing; an endpoint merely touching the box face
+    (overlap collapsing to ``t=0`` or ``t=1``) does not, so a point lying on an
+    occluder's own surface is not treated as occluded by that occluder.
+    """
+
+    t_enter, t_exit = 0.0, 1.0
+    for axis in range(3):
+        direction = end[axis] - start[axis]
+        if abs(direction) < eps:
+            # Segment runs parallel to this slab; it can only cross the box if it
+            # already lies within the slab's extent.
+            if start[axis] < low[axis] - eps or start[axis] > high[axis] + eps:
+                return False
+            continue
+        t_low = (low[axis] - start[axis]) / direction
+        t_high = (high[axis] - start[axis]) / direction
+        if t_low > t_high:
+            t_low, t_high = t_high, t_low
+        t_enter = max(t_enter, t_low)
+        t_exit = min(t_exit, t_high)
+        if t_enter > t_exit:
+            return False
+    # Require a real crossing that lies strictly between the endpoints.
+    return t_exit - t_enter > eps and t_exit > eps and t_enter < 1.0 - eps
+
+
+def _point_in_cone(
+    point: list[float], apex: list[float], axis_unit: list[float], half_angle_deg: float
+) -> tuple[bool, bool, float | None]:
+    """Classify a point against a view cone.
+
+    Returns ``(inside, behind, angle_deg)``. ``behind`` is true when the point is
+    on the apex plane or behind it (``dot(point - apex, axis) <= 0``): a camera
+    does not see behind itself, and the apex direction is undefined, so such a
+    point is never inside. ``angle_deg`` is the angle between ``point - apex`` and
+    the axis for a forward point, or ``None`` for a behind point.
+    """
+
+    vector = [point[axis] - apex[axis] for axis in range(3)]
+    along = sum(component * unit for component, unit in zip(vector, axis_unit))
+    if along <= 0:
+        return False, True, None
+    length = sqrt(sum(component * component for component in vector))
+    # length > 0 here because along > 0 implies a non-zero vector.
+    cosine = min(1.0, max(-1.0, along / length))
+    angle_deg = degrees(acos(cosine))
+    return angle_deg <= half_angle_deg, False, angle_deg
+
+
+def _view_cone_target_points(
+    spatial: dict[str, Any], target: Any
+) -> tuple[list[list[float]] | None, str | None]:
+    """Resolve a target to its test points, or an error message.
+
+    An object reference ``obj.<label>`` contributes its bounding-box corners and
+    centre (9 points); an explicit ``[x, y, z]`` list contributes that single
+    point.
+    """
+
+    if isinstance(target, str):
+        if not target.startswith("obj."):
+            return None, f"unsupported target {target!r}; expected obj.<label> or a point"
+        obj = _object_index(spatial).get(target.split(".", 1)[1])
+        if obj is None:
+            return None, f"no object {target!r}"
+        bbox = obj.get("bbox")
+        if not bbox or "min" not in bbox or "max" not in bbox:
+            return None, f"target {target!r} has no bbox"
+        return _bbox_test_points(bbox), None
+    point, error = _resolve_point(spatial, target)
+    if error is not None:
+        return None, error
+    return [point], None
+
+
+def _check_view_cone(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
+    """Assert that targets lie inside a view cone, sightlines optionally clear.
+
+    ADR 0052 (D-027): a field-of-view containment check. The cone is an apex
+    point, an axis direction (normalized here), and a half-angle. Each target's
+    test points (a target object's bbox corners+centre, or an explicit point) must
+    fall inside the cone; with ``occluders`` present, the apex->point sightline
+    must also miss every occluder's bounding box (an AABB approximation — see the
+    ADR). Any malformed input fails the one check loudly rather than passing.
+    """
+
+    # --- Validate the cone axis. --------------------------------------------
+    axis = check.get("axis")
+    if axis is None:
+        return _view_cone_error(check, "missing 'axis'; a view_cone needs a direction [x, y, z]")
+    if not isinstance(axis, (list, tuple)) or len(axis) != 3:
+        return _view_cone_error(check, f"axis {axis!r} is not a 3-vector")
+    try:
+        axis = [float(component) for component in axis]
+    except (TypeError, ValueError):
+        return _view_cone_error(check, f"axis {axis!r} has non-numeric components")
+    axis_unit = _unit_vector(axis)
+    if axis_unit == [0.0, 0.0, 0.0]:
+        return _view_cone_error(check, f"axis {axis!r} is zero-length; a direction is required")
+
+    # --- Validate the half-angle. -------------------------------------------
+    if "half_angle_deg" not in check:
+        return _view_cone_error(check, "missing 'half_angle_deg'")
+    try:
+        half_angle_deg = float(check["half_angle_deg"])
+    except (TypeError, ValueError):
+        return _view_cone_error(check, f"half_angle_deg {check['half_angle_deg']!r} is not numeric")
+    if not 0 < half_angle_deg <= 180:
+        return _view_cone_error(
+            check, f"half_angle_deg {check['half_angle_deg']!r} must be in (0, 180]"
+        )
+
+    # --- Resolve the apex point. --------------------------------------------
+    if "apex" not in check:
+        return _view_cone_error(check, "missing 'apex'")
+    apex, error = _resolve_point(spatial, check["apex"])
+    if error is not None:
+        return _view_cone_error(check, f"could not resolve apex: {error}")
+
+    # --- Resolve occluder bounding boxes (optional). ------------------------
+    occluders: list[tuple[list[float], list[float]]] = []
+    for occluder in check.get("occluders", []) or []:
+        if not isinstance(occluder, str) or not occluder.startswith("obj."):
+            return _view_cone_error(check, f"unsupported occluder {occluder!r}; expected obj.<label>")
+        obj = _object_index(spatial).get(occluder.split(".", 1)[1])
+        if obj is None:
+            return _view_cone_error(check, f"no occluder object {occluder!r}")
+        bbox = obj.get("bbox")
+        if not bbox or "min" not in bbox or "max" not in bbox:
+            return _view_cone_error(check, f"occluder {occluder!r} has no bbox")
+        occluders.append((bbox["min"], bbox["max"]))
+
+    # --- Require at least one target. ---------------------------------------
+    targets = check.get("targets")
+    if not targets:
+        return _view_cone_error(check, "missing 'targets'; a view_cone needs at least one target")
+
+    # --- Test every target. -------------------------------------------------
+    target_results: list[dict[str, Any]] = []
+    for target in targets:
+        points, error = _view_cone_target_points(spatial, target)
+        if error is not None:
+            return _view_cone_error(check, error)
+
+        worst_angle: float | None = None
+        worst_point: list[float] | None = None
+        behind_point: list[float] | None = None
+        any_occluded = False
+        for point in points:
+            inside, behind, angle_deg = _point_in_cone(point, apex, axis_unit, half_angle_deg)
+            if behind:
+                if behind_point is None:
+                    behind_point = point
+            elif angle_deg is not None and (worst_angle is None or angle_deg > worst_angle):
+                worst_angle = angle_deg
+                worst_point = point
+            if occluders and any(
+                _segment_intersects_aabb(apex, point, low, high) for low, high in occluders
+            ):
+                any_occluded = True
+
+        # A target fails if any point is behind the apex, any point exceeds the
+        # half-angle, or any sightline is occluded. Reasons are prioritized so the
+        # most fundamental visibility failure is reported first.
+        angle_exceeds = worst_angle is not None and worst_angle > half_angle_deg
+        record: dict[str, Any] = {
+            "target": list(target) if isinstance(target, (list, tuple)) else target,
+            "angle_deg": worst_angle,
+            "occluded": any_occluded,
+        }
+        if behind_point is not None:
+            record["status"] = "fail"
+            record["reason"] = "behind_apex"
+            record["worst_point"] = behind_point
+        elif angle_exceeds:
+            record["status"] = "fail"
+            record["reason"] = "angle_exceeds_half_angle"
+            record["worst_point"] = worst_point
+        elif any_occluded:
+            record["status"] = "fail"
+            record["reason"] = "occluded"
+        else:
+            record["status"] = "pass"
+        target_results.append(record)
+
+    passed = all(result["status"] == "pass" for result in target_results)
+    return {
+        "id": check["id"],
+        "type": "view_cone",
+        "status": "pass" if passed else "fail",
+        "apex": apex,
+        "axis": axis_unit,
+        "half_angle_deg": half_angle_deg,
+        "occlusion_method": "aabb",
+        "targets": target_results,
+    }
+
+
 def _evaluate_check(
     spatial: dict[str, Any], check: dict[str, Any], run_dir: Path, timeout: float = 30.0
 ) -> dict[str, Any]:
@@ -941,6 +1227,8 @@ def _evaluate_check(
         return _check_center_of_mass(spatial, check)
     if check_type == "stability":
         return _check_stability(spatial, check)
+    if check_type == "view_cone":
+        return _check_view_cone(spatial, check)
     if check_type == "bend":
         return _check_bend(run_dir, check)
     if check_type == "manufacturability":

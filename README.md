@@ -98,6 +98,15 @@ check `type`s:
 - `interference` — no pair of solids overlaps (BREP intersection volume).
 - `center_of_mass` — a part or assembly center of mass at a target point/region.
 - `stability` — the projected center of mass lies inside a support polygon.
+- `view_cone` — targets lie inside a field-of-view cone (apex point, `axis`
+  direction, `half_angle_deg`), with an optional unobstructed-sightline check.
+  Each target object is tested by its bounding-box corners **and** center (all
+  must be inside); an explicit `[x, y, z]` target is tested as a single point.
+  `apex` is a world point or a reference (e.g. `obj.<label>.center`). With
+  `occluders:` present, the apex-to-point sightline must miss every occluder's
+  bounding box (an AABB approximation that errs toward reporting occlusion). A
+  failing target names its worst point, angle, and reason
+  (`angle_exceeds_half_angle` / `behind_apex` / `occluded`).
 - `bend` — sheet-metal bend count/angle/radius/direction from `bends.json`.
 - `manufacturability` — laser/sheet DFM rules (min hole diameter, slot width,
   web, hole-to-edge, bend radius, hole-to-bend, min flange) parameterized by
