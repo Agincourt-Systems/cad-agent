@@ -370,8 +370,74 @@ def publish_sheet_metal(
             )
 
 
+# ADR 0057 (deficiency D-032): the closed set of keys a per-feature ``tolerance``
+# dict may carry. ``fit`` is an ISO tolerance-class / fit designation passed
+# through verbatim (no ISO 286 deviation table — a fit string is opaque to cadx);
+# ``note`` is free text; ``nominal``/``tol_plus``/``tol_minus`` are millimetre
+# sizes. The set is closed so a typo (``{"ft": "H7"}``) fails loudly at the
+# publishing design line instead of vanishing into the feature record.
+_TOLERANCE_STRING_KEYS = ("fit", "note")
+_TOLERANCE_NUMERIC_KEYS = ("nominal", "tol_plus", "tol_minus")
+_TOLERANCE_KEYS = frozenset(_TOLERANCE_STRING_KEYS + _TOLERANCE_NUMERIC_KEYS)
+
+
+def _validate_tolerance(tolerance: Any) -> dict[str, Any]:
+    """Validate a per-feature ``tolerance`` dict and return a normalized copy (ADR 0057).
+
+    The dict is kept a plain, JSON-safe mapping that serializes as-is onto the
+    feature record. Validation is deliberately light:
+
+    * ``tolerance`` itself must be a mapping and must carry at least one key (an
+      empty dict states no fit and is almost always a mistake).
+    * Only the keys in :data:`_TOLERANCE_KEYS` are allowed; any other key raises a
+      ``ValueError`` naming it, so a typo is attributable to the design line.
+    * ``fit`` and ``note`` must be strings; ``fit`` is stored VERBATIM — cadx does
+      not resolve a fit into deviations (out of scope, see ADR 0057).
+    * ``nominal``/``tol_plus``/``tol_minus`` must be real numbers and are
+      normalized to ``float`` for a stable record shape. Booleans are rejected:
+      ``bool`` is an ``int`` subclass but is never a size.
+    """
+
+    if not isinstance(tolerance, dict):
+        raise ValueError(f"tolerance must be a dict, got {type(tolerance).__name__}")
+    if not tolerance:
+        raise ValueError("tolerance dict is empty; supply at least one of " f"{sorted(_TOLERANCE_KEYS)}")
+    unknown = set(tolerance) - _TOLERANCE_KEYS
+    if unknown:
+        raise ValueError(
+            f"unknown tolerance key(s) {sorted(unknown)}; expected a subset of {sorted(_TOLERANCE_KEYS)}"
+        )
+
+    normalized: dict[str, Any] = {}
+    for key, value in tolerance.items():
+        if key in _TOLERANCE_STRING_KEYS:
+            if not isinstance(value, str):
+                raise ValueError(f"tolerance {key!r} must be a string, got {type(value).__name__}")
+            normalized[key] = value
+        else:  # numeric key
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"tolerance {key!r} must be a number, got {type(value).__name__}")
+            normalized[key] = float(value)
+    return normalized
+
+
 def publish_feature(feature_id: str, kind: str, **properties: Any) -> None:
-    """Publish a critical feature such as a hole, slot, boss, rib, or datum."""
+    """Publish a critical feature such as a hole, slot, boss, rib, or datum.
+
+    ADR 0057 (deficiency D-032): pass an optional ``tolerance`` dict to attach a
+    fit / deviation to the feature — e.g. ``tolerance={"fit": "H7",
+    "nominal": 16.0}`` for a 16 H7 bearing seat or ``{"tol_plus": 0.02,
+    "tol_minus": -0.01, "note": "press fit"}`` for discrete deviations. It is
+    validated (see :func:`_validate_tolerance`) and stored verbatim on the
+    feature record, so it rides the existing feature passthrough into
+    ``spatial.json`` and is rolled up by ``cadx bom``. Features published without
+    a ``tolerance`` are byte-identical to before.
+    """
+
+    # Validate the tolerance at publish time so a mistyped fit fails on the design
+    # line that made it. Kept a plain dict so it serializes as-is downstream.
+    if "tolerance" in properties:
+        properties["tolerance"] = _validate_tolerance(properties["tolerance"])
 
     feature = {"id": f"feat.{feature_id}" if not feature_id.startswith("feat.") else feature_id, "kind": kind}
     feature.update(properties)

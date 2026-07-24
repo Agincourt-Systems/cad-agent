@@ -170,6 +170,13 @@ checks:
 plus `cadx bom <run_dir>` produce a deterministic `bom.csv`/`bom.json`, and every
 export record carries explicit millimeter units.
 
+- **Feature tolerances / fits** — `publish_feature(..., tolerance={"fit": "H7",
+  "nominal": 16.0})` attaches a fit or discrete deviations (`tol_plus`,
+  `tol_minus`, `note`) to a feature; it rides into `spatial.json` on the feature
+  record and is rolled up into a `tolerances` array in `bom.json`. Fit strings
+  pass through verbatim (no ISO 286 table); STEP/DXF GD&T embedding is out of
+  scope.
+
 ### Sheet-metal parts (`bend` / `bend_chain`)
 
 A bent bracket is described once and yields a folded 3-D solid plus a single flat

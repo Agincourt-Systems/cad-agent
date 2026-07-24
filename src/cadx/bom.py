@@ -138,6 +138,38 @@ def _row_for(obj: dict[str, Any], meta: dict[str, Any], area: float | None, hole
     }
 
 
+def _tolerance_summary(features: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Roll every toleranced feature up into a flat, per-run tolerance list (ADR 0057).
+
+    D-032: a fit (``16 H7`` bearing seat, ``8 g6`` dead shaft) authored via
+    ``publish_feature(..., tolerance=...)`` lands on its feature record in
+    ``spatial.json``. This gathers those records into a single list a fabricator
+    reads alongside the part rows, so the fits are not scattered across features.
+    Each entry names the ``feature`` id, its ``kind``, the owning ``object``
+    (derived from ``source_object`` ``obj.<label>`` → ``<label>``, or ``None``),
+    and the ``tolerance`` dict verbatim. Sorted by feature id so ``bom.json`` is
+    byte-stable across runs.
+    """
+
+    entries: list[dict[str, Any]] = []
+    for feature in features:
+        tolerance = feature.get("tolerance")
+        if not tolerance:
+            continue
+        source = feature.get("source_object")
+        obj = source[len("obj.") :] if isinstance(source, str) and source.startswith("obj.") else None
+        entries.append(
+            {
+                "feature": feature.get("id"),
+                "kind": feature.get("kind"),
+                "object": obj,
+                "tolerance": tolerance,
+            }
+        )
+    entries.sort(key=lambda entry: entry["feature"] or "")
+    return entries
+
+
 def _vendor_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Group rows by vendor with per-vendor quantity, area, and cost totals."""
 
@@ -218,6 +250,8 @@ def build_bom(run_dir: Path) -> dict[str, Any]:
 
     rows.sort(key=lambda row: ((row["vendor"] or ""), row["label"]))
     vendors = _vendor_groups(rows)
+    # ADR 0057 (D-032): run-level rollup of every toleranced feature.
+    tolerances = _tolerance_summary(features)
     totals = {
         "qty": sum(row["qty"] for row in rows),
         "area_mm2": float(sum(row["area_mm2"] * row["qty"] for row in rows if row["area_mm2"] is not None)),
@@ -234,6 +268,9 @@ def build_bom(run_dir: Path) -> dict[str, Any]:
             "rows": rows,
             "vendors": vendors,
             "totals": totals,
+            # Always present (empty when no feature is toleranced) so the record
+            # shape is fixed for downstream consumers, mirroring ``warnings``.
+            "tolerances": tolerances,
             "warnings": warnings,
         },
     )
