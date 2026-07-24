@@ -254,6 +254,15 @@ publish("lid", lid, mate=mate(to="box", kind="revolute",
       tolerance: 0.001
 ```
 
+Each kinematic mate records the resolved **world joint frame** — a world point on
+the joint axis plus the world axis direction — at both configurations:
+`mate.joint_world_zero` (joint value 0) and `mate.joint_world` (the posed value).
+For a revolute the two coincide (rotation about the axis moves neither the point
+nor the direction); for a prismatic the posed point slides `travel` along the
+axis. A URDF generator reads a concrete point-on-axis directly instead of
+reconstructing it from datums (the child-link `mate.origin` is `parent·target·anchor⁻¹`,
+which is generally *not* on the axis). Rigid mates carry no joint frame.
+
 ## Materials (screenshot appearance)
 
 Shaded renders (`cadx render`, `cadx shots`) color each part by its declared

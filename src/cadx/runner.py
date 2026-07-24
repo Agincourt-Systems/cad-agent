@@ -404,7 +404,7 @@ def _mate_frame_export(entry: dict[str, Any], parent: dict[str, Any]) -> dict[st
     """
 
     anchor, target = _mate_frames(entry, parent)
-    kind, _angle, _travel = _mate_pose(entry["mate"])
+    kind, angle, travel = _mate_pose(entry["mate"])
     export: dict[str, Any] = {
         "anchor": _placement_record(anchor),
         "target": _placement_record(target),
@@ -433,6 +433,20 @@ def _mate_frame_export(entry: dict[str, Any], parent: dict[str, Any]) -> dict[st
             export["axis"] = [0.0, 0.0, 1.0]
             # No parent rotation to remove -> parent-relative axis == world axis.
             export["axis_in_parent"] = [0.0, 0.0, 1.0]
+            # ADR 0054 (D-034): the world joint frame (a point ON the axis + the
+            # world direction), at joint value 0 and at the posed value. The
+            # world target origin (parent + target here, translation-only) is a
+            # point on the axis; the pose adds ``travel`` along +Z. Synthetic
+            # mates are rigid/prismatic only, so there is no rotation to apply.
+            joint_origin_zero = [
+                parent_value + target_value
+                for parent_value, target_value in zip(parent_position, target_position)
+            ]
+            export["joint_world_zero"] = {"origin": joint_origin_zero, "axis": [0.0, 0.0, 1.0]}
+            export["joint_world"] = {
+                "origin": [joint_origin_zero[0], joint_origin_zero[1], joint_origin_zero[2] + travel],
+                "axis": [0.0, 0.0, 1.0],
+            }
         return export
 
     parent_placement = parent.get("placement")
@@ -462,6 +476,26 @@ def _mate_frame_export(entry: dict[str, Any], parent: dict[str, Any]) -> dict[st
         # DIRECTION, so only the parent's rotation is inverted (``R_parentᵀ · v``);
         # the parent translation must never shift the vector.
         export["axis_in_parent"] = _apply_inverse_rotation(parent_rotation, world_axis)
+        # ADR 0054 (D-034): the resolved world joint frame — a world POINT on the
+        # joint axis plus the world axis DIRECTION — at joint value 0 and at the
+        # posed value. The joint axis is the target frame's local Z (ADR 0025), so
+        # ``world_target``'s origin is a canonical point on the axis (distinct from
+        # the child link ``origin`` above, which is ``world_target * anchor⁻¹``).
+        # The pose ``J = Location((0, 0, travel), (0, 0, angle))`` slides/rotates
+        # about that axis: for a revolute the origin and axis are invariant, for a
+        # prismatic the origin moves ``travel`` along the axis. Points get the full
+        # transform; the axis is rotation-only, which ``_world_axis`` enforces.
+        from build123d import Location
+
+        export["joint_world_zero"] = {
+            "origin": _placement_position(world_target),
+            "axis": world_axis,
+        }
+        world_posed = world_target * Location((0.0, 0.0, travel), (0.0, 0.0, angle))
+        export["joint_world"] = {
+            "origin": _placement_position(world_posed),
+            "axis": _world_axis(world_posed),
+        }
     return export
 
 
