@@ -889,6 +889,17 @@ def _apply_link_frame_inertia_mass(published: list[dict[str, Any]]) -> None:
             "density": "mass-weighted",
             "about": "part centroid",
             "axes": "link (body) frame",
+            # ADR 0056 (D-033): spatial.json ships three inertia tensors; point a
+            # robotics consumer at the one a URDF <inertial> wants — this
+            # body-frame, mass-scaled tensor — so it does not pick the
+            # world-geometric one (wrong cross-terms for a rotated part). A
+            # self-describing pointer that travels with the data; docs/inertia-
+            # consumers.md has the full worked recipe.
+            "recommended_use": (
+                "URDF <inertial>: use this tensor (body-frame, mass-scaled, "
+                "g*mm^2) with the part center of mass as <origin>. See "
+                "docs/inertia-consumers.md."
+            ),
         }
 
 

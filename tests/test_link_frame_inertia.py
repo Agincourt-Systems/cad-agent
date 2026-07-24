@@ -63,6 +63,12 @@ _LINK_MASS_SEMANTICS = {
     "density": "mass-weighted",
     "about": "part centroid",
     "axes": "link (body) frame",
+    # ADR 0056 (D-033): a self-describing robotics pointer travels with the tensor.
+    "recommended_use": (
+        "URDF <inertial>: use this tensor (body-frame, mass-scaled, "
+        "g*mm^2) with the part center of mass as <origin>. See "
+        "docs/inertia-consumers.md."
+    ),
 }
 
 

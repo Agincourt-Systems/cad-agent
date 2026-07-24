@@ -318,6 +318,13 @@ semantics record beside it:
   are `g*mm^2` / `mass-weighted` when every part has a density, else `mm^5` /
   `unit (geometric)`, matching the `assembly.weighting` field.
 
+**Robotics / URDF consumers:** three per-part inertia tensors ship
+(`matrix_of_inertia`, `inertia_link_frame`, `inertia_link_frame_mass`) and it is a
+trap to pick the wrong one — use `inertia_link_frame_mass` (body-frame,
+mass-scaled, `g*mm^2`), whose `..._semantics.recommended_use` field says so inline.
+See [docs/inertia-consumers.md](docs/inertia-consumers.md) for a worked
+rotated-part example and the exact URDF `<inertial>` recipe.
+
 Screenshot lighting is steerable per `cadx shots` invocation:
 `--light camera` front-lights each view with its own camera (the one-flag fix
 for dark side/rear views), and `--light X,Y,Z` sets an explicit direction —
