@@ -297,6 +297,13 @@ stainless, 1018/mild steel, brass, ABS, PLA, PETG, Ti-6Al-4V), and each part's
 records whether a density was author-supplied (`"explicit"`) or looked up
 (`"material:<name>"`).
 
+**Density unit contract:** an explicit `density=` is in **g/mm³** — the unit every
+emitted mass (grams) and mass-inertia (`g*mm^2`) label assumes. If yours is in a
+different unit, declare it with `publish(..., density=..., density_unit="kg/mm^3")`:
+the harness normalizes the stored density to g/mm³ (kg/mm³ × 1000) so labels stay
+correct and records `metadata.density_unit_declared`. Accepted units are `"g/mm^3"`
+(default) and `"kg/mm^3"`; an unknown string raises `ValueError` at `publish()`.
+
 Inertia carries a **unit trap** worth stating plainly, so each tensor ships a
 semantics record beside it:
 

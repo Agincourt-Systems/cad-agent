@@ -142,8 +142,20 @@ def _pose_range(value: Any, name: str) -> list[float]:
     return [low, high]
 
 
+# ADR 0055 (D-031): accepted density units and their factor to the canonical
+# g/mm³ that every emitted mass / mass-inertia label assumes. 1 kg = 1000 g, so
+# a kg/mm³ density scales by 1000 to become g/mm³.
+_DENSITY_UNITS: dict[str, float] = {"g/mm^3": 1.0, "kg/mm^3": 1000.0}
+
+
 def publish(
-    label: str, obj: Any, role: str = "part", placement: Any = None, mate: Any = None, **metadata: Any
+    label: str,
+    obj: Any,
+    role: str = "part",
+    placement: Any = None,
+    mate: Any = None,
+    density_unit: str = "g/mm^3",
+    **metadata: Any,
 ) -> None:
     """Publish a named object for inspection and export.
 
@@ -160,10 +172,33 @@ def publish(
     naming another published part and a pair of frames; the harness resolves it
     into a placement. The two are mutually exclusive because a part cannot have
     both a hand-computed transform and a derived one.
+
+    **Density unit contract (ADR 0055, D-031).** An explicit ``density=`` keyword
+    is in **g/mm³** — the unit every emitted mass (grams) and mass-inertia
+    (``g*mm^2``) label assumes. If your density is in a different unit, declare it
+    with ``density_unit=`` (``"g/mm^3"`` default, or ``"kg/mm^3"``): the harness
+    normalizes the stored density to g/mm³ at publish time (kg/mm³ ``× 1000``) so
+    every label stays correct, and records the author's declared unit as
+    ``metadata.density_unit_declared``. An unknown ``density_unit`` string raises
+    :class:`ValueError` here, at the design line. The material-implied density
+    path (:mod:`cadx.density`) is unaffected — it always resolves to g/mm³.
     """
 
     if placement is not None and mate is not None:
         raise ValueError("publish() accepts either placement or mate, not both")
+
+    # ADR 0055 (D-031): validate the unit first (a typo fails loudly even when no
+    # density is supplied), then normalize an explicit density to g/mm³ so every
+    # downstream label is universally true. The default unit scales by 1.0 and
+    # records nothing, keeping density-free and g/mm³ runs byte-identical.
+    if density_unit not in _DENSITY_UNITS:
+        raise ValueError(
+            f"unknown density_unit {density_unit!r}; expected one of {sorted(_DENSITY_UNITS)}"
+        )
+    factor = _DENSITY_UNITS[density_unit]
+    if factor != 1.0 and isinstance(metadata.get("density"), (int, float)):
+        metadata["density"] = float(metadata["density"]) * factor
+        metadata["density_unit_declared"] = density_unit
     entry: dict[str, Any] = {
         "label": label,
         "role": role,
