@@ -1,35 +1,103 @@
-Project Generic:
+# Project Generic Practices
 
-The following describe certain mandatory software development practices, to enshrine well-skilled methodologies:
+These practices apply to every project. They are mandatory. A project-specific file can override them.
 
-1. Follow strict red-green Test Driven Design - tests must precede code, and tests must provide feedback both when code is absent (tests must fail), and present (tests must pass). Tests must be non-trivial, exercising intended functionality and properties, not merely structure, naming, or other superficial, easily satisfied aspects.
+## Scope
 
-2. Test coverage must be total, and if not, documented as such, with sufficient rationale to excuse total coverage of all code paths. Do not neglect integration tests.
+1. Do what the user asked. Keep to the scope of the request.
+2. Make routine decisions yourself. Do not ask for a second opinion on a decision that you can make.
+3. Ask a question when two readings of the request lead to materially different work.
+4. If the request seems wrong, or a better approach exists, say so in one sentence. Then do the task as asked.
+5. Finish the whole task. Do not end a turn by announcing the next step. Do the step.
+6. Before the task is complete, stop only when you cannot continue without the user, or when a rule in this file requires user approval.
+7. Do not change code, structure, or behavior that the current goal does not require.
+8. Record unrelated improvements in LOG.md as proposals. Do not implement them.
 
-3. Comment all code thoroughly, sufficient that the codebase might be transferred to another developer who, though competent, is entirely unfamiliar with the software, its rationale, and its history.
+## Session start
 
-4. Architecture Decision Records must precede all feature implementation - these document the motivations, decision points, and success/failure criteria for each feature, and the project design document should map to a sequence of ADRs. After each ADR is complete, it is to receive an After Action Report as to its effect on the project, and these are to be revisited as new information becomes available (for example, if a feature requires collecting data for an extended period of time to determine its usefulness, the AAR will be updated after sufficient data is available and assessed).
+1. Read MEMORY.md.
+2. Read README.md. Its "Development" section lists the build, fast-suite, and extended-suite commands.
+3. If the "Status" or "Development" section is missing or does not match the project, correct it before other work.
 
-5. Branch discipline should generally follow the ADR structure of the implementation roadmap, with a new branch for each ADR, merged into master once the feature is complete, or development otherwise halted. Merges land locally first: complete the branch, commit, push the branch to its remote tracking ref, then merge the branch into local `master` (fast-forward where possible) and push `master` upstream. Do not open pull requests on the remote to trigger the merge — the local-merge-then-push flow is the canonical path. Preserve feature branches (local and remote) after merge for historical traceability; do not delete them. 
+## Architecture Decision Records
 
-6. When multiple independent tasks can be pursued concurrently on separate branches or worktrees, with no cross-branch dependency, propose launching sub-agents for user review; default to proposing sub-agents with the most powerful model, and highest level of reasoning, available. If approved, give each sub-agent a distinct branch or worktree, a bounded scope, explicit success and failure criteria, and instructions to commit completed logical units locally and report results before any merge or push.
+1. Write an ADR before you implement a feature, change an interface, or change the architecture.
+2. Bug fixes, and changes with no effect on behavior or interfaces, do not need an ADR. Record them in LOG.md.
+3. Store ADRs in docs/adr/, numbered in sequence, unless the project already uses a different location.
+4. Each ADR states the motivation, the decision points, the options considered, and the success and failure criteria.
+5. The project design document maps to a sequence of ADRs.
+6. When the ADR work is complete, add an After Action Report (AAR) to the ADR. The AAR measures the effect on the project against the ADR criteria.
+7. If the AAR needs data that is not yet available, add it to the "Open AARs" list in MEMORY.md. State the condition that closes it.
+8. When that condition is met, update the AAR and remove it from the list.
 
-7. Commit only those files one specifically has intentionally modified, and push after every logical unit of work is complete (which implies a passing, regression free test suite evaluation).
+## Branches and commits
 
-8. Do not regress code, or change unrelated elements, aspects, or the structure of the codebase, in the pursuit of a given objective. All changes must be intentional, and bound to a specific, articulable, recorded goal, that advances and improves the project at hand. Reverting to previous commits is preferable to commenting out or stubbing out code, if a feature needs to be rolled back or removed for reasons of testing, refactoring, or changes in design decisions.
+1. Create one branch for each ADR.
+2. Commit only the files that you changed on purpose for the current goal.
+3. A logical unit of work is complete when the fast suite passes with no regressions.
+4. Commit and push the branch after each logical unit of work.
+5. Merge the branch when its feature is complete, or when its development stops.
+6. To merge, first confirm that README.md matches the branch. Push the branch to its remote tracking branch. Merge it into local master, with fast-forward when possible. Then push master.
+7. Do not open pull requests. The local merge is the only merge path.
+8. Do not delete feature branches, local or remote. They are the historical record.
+9. To remove or roll back a feature, revert commits. Do not comment out or stub out code.
 
-9. Eagerly and assiduously seek out tasks and complete them; do not stop or defer work for later. Initiative and good judgement is preferred over inaction; using the above branch and commit discipline, any work completed too early can be reverted.
+## Tests
 
-10. Ask questions freely, where clarification is needed, but do not ask for a second opinion merely out of caution - if you have made the right decision, be confident in its correctness, and carry it out.
+1. Use red-green test-driven development. Write the test first. Run it and confirm that it fails. Write the code. Run the test and confirm that it passes.
+2. Tests must exercise behavior and properties. A test that checks only structure, names, or other superficial features does not count.
+3. Every branch that you add or change must have a test.
+4. Write integration tests where components interact.
+5. If a branch cannot have a meaningful test, mark it with the coverage tool's exclusion marker. Add a comment that gives the reason. Do not write a trivial test to increase coverage.
+6. Put slow tests in a separate extended suite. Keep them out of the fast suite.
+7. During feature work, run the extended suite in the background.
+8. Wait for the extended suite to pass after major revisions. Also wait for it before a commit that changes behavior the extended suite measures.
 
-11. Maintain the documentation layers by purpose. Use `LOG.md` as the inclusive chronological spine for development: record dated process notes, exploration, dead ends, backtracks, scratchpad observations, and links to specialized records. When a log entry captures a conversation or design note that will be used immediately, place the longer note under `docs/log/` and link to it from `LOG.md`. Use `MEMORY.md` only for high-priority facts that should remain present in future working context. Use `LESSONS.md` for durable lessons learned during the project. Use README files for current public entrypoints and navigational summaries rather than as the primary historical trace.
+## Comments
 
-12. Review these practices reguarly, to keep them in context.
+1. Write comments for a competent developer who does not know the project, its rationale, or its history.
+2. Document each public interface: inputs, outputs, units, and errors.
+3. Comment on why code exists, its invariants, and constraints that the code does not show.
+4. Do not restate what the code does.
+5. For design history, cite the ADR number. Do not copy ADR content into comments.
 
-13. Separate slower regressions into an explicit extended suite rather than placing them on the default fast path.
+## Documentation
 
-14. Do not neglect the extended suite: run slower tests in parallel while doing active feature implementation work, but only block on the extended suite after major revisions or before a commit that changes functionality measured by the extended tests.
+1. LOG.md is the chronological record of development. Add dated entries for process notes, exploration, dead ends, backtracks, and observations. Link to specialized records.
+2. Put long notes, such as conversations and design discussions, in docs/log/. Link to them from LOG.md.
+3. MEMORY.md holds only high-priority facts that every session needs. Keep it short. Remove facts that are no longer true.
+4. LESSONS.md holds durable lessons from the project.
+5. README files describe the current state and the entry points. They are not the historical record.
+6. README.md has a "Status" section. It states what works, what is in progress, what is broken, and which ADRs are active.
+7. A stale README is a defect. Update the "Status" and "Development" sections in the same commit as the change that makes them wrong.
+8. Keep each document as short as its content allows. Do not add filler sections or repeated summaries.
 
-15. Prefer structured tools (MCP servers, LSP servers, existing utilities, etc.) where possible, when they support a desired behavior. Use ad hoc scripts and function reimplementation only as secondary support when such tools are insufficient, absent, unnecessary overhead for the task at hand, or the specific use case merits additional documentation in the form of custom code.
+## Sub-agents
 
-16. Use ASD-STE100 whenever feasible for planning (plan mode), communication with the user, documentation, markdown documents, etc.
+1. Propose sub-agents only for large tasks that can run in parallel with no cross-branch dependency.
+2. Do not propose a sub-agent for work that you can finish in a few tool calls.
+3. Do not use sub-agents to verify or review your own work.
+4. Get user approval before you launch sub-agents.
+5. Sub-agents use the default model and effort unless the user approves more.
+6. Give each sub-agent its own branch or worktree, a bounded scope, and explicit success and failure criteria.
+7. Sub-agents commit completed logical units locally. They report results before any merge or push.
+
+## Tools
+
+1. Prefer structured tools, such as MCP servers, LSP servers, and existing utilities, when they support the task.
+2. Write ad hoc scripts or reimplement existing functions only when structured tools are missing, insufficient, or too much overhead.
+3. Custom code is also correct when it documents a specific use case better than a tool does.
+
+## Writing
+
+Apply these rules to messages to the user, plans, and documentation.
+
+1. State the outcome in the first sentence. Put details after it.
+2. Write one topic per paragraph. Open each paragraph with its point.
+3. Define each term, acronym, and label the first time you use it.
+4. Do not refer to anything the user has not seen. Summarize it first.
+5. Name code by file path and symbol.
+6. Write complete sentences. Do not use arrow chains or fragments in place of prose.
+7. Prefer numbers and examples to adjectives.
+8. Cut words the reader does not need. Keep words that a reader new to the task needs.
+9. Use one word for one meaning.
