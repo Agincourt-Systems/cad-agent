@@ -825,20 +825,30 @@ def _check_bend(run_dir: Path, check: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _run_param_set(run_dir: Path, params: dict[str, Any], sweep_root: Path, timeout: float) -> tuple[Path, str]:
+def _run_param_set(
+    run_dir: Path, params: dict[str, Any], sweep_root: Path, timeout: float
+) -> tuple[Path, str, list[dict[str, Any]]]:
     """Re-run the design's source snapshot with one parameter set.
 
     The swept design is the run's own ``source_snapshot.py``, so the geometry the
-    sweep evaluates matches the geometry the original run produced. Returns the
-    parameter set's run directory and its run status.
+    sweep evaluates matches the geometry the original run produced. The snapshot
+    sits alone in the artifact directory, so its imports resolve against the
+    original design directory recorded as ``source`` in the run's diagnostics.
+    Returns the parameter set's run directory, its run status, and the worker's
+    error records (empty on success).
     """
 
     from cadx.runner import run_design
 
+    import_dir = None
+    try:
+        import_dir = Path(read_json(run_dir / "diagnostics.json")["source"]).parent
+    except Exception:  # pragma: no cover - runs made by cadx always record source
+        pass
     params_path = sweep_root / "params.yaml"
     write_yaml(params_path, params)
-    payload = run_design(run_dir / "source_snapshot.py", params_path, sweep_root, timeout)
-    return Path(payload["artifact_dir"]), payload["status"]
+    payload = run_design(run_dir / "source_snapshot.py", params_path, sweep_root, timeout, import_dir)
+    return Path(payload["artifact_dir"]), payload["status"], payload.get("errors", [])
 
 
 def _range_violations(set_run_dir: Path) -> list[dict[str, Any]]:
@@ -889,9 +899,14 @@ def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> d
 
     sets: list[dict[str, Any]] = []
     for params in check["params"]:
-        set_run_dir, status = _run_param_set(run_dir, params, sweep_root, timeout)
+        set_run_dir, status, errors = _run_param_set(run_dir, params, sweep_root, timeout)
         if status != "ok":
-            sets.append({"params": params, "status": "fail", "run_status": status, "checks": []})
+            # Carry the worker's error type and message (traceback dropped to
+            # keep checks.json compact; it stays in the set's diagnostics.json).
+            set_errors = [{"type": err.get("type"), "message": err.get("message")} for err in errors]
+            sets.append(
+                {"params": params, "status": "fail", "run_status": status, "errors": set_errors, "checks": []}
+            )
             continue
         spatial = read_json(set_run_dir / "spatial.json")
         sub_checks = [_evaluate_check(spatial, sub, set_run_dir, timeout) for sub in check.get("checks", [])]

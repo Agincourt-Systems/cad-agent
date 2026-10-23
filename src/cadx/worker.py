@@ -8,6 +8,7 @@ exports artifacts, writes diagnostics, and exits with a simple status code.
 from __future__ import annotations
 
 import argparse
+import sys
 import traceback
 from pathlib import Path
 from typing import Any
@@ -162,7 +163,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cadx.worker")
     parser.add_argument("source", type=Path)
     parser.add_argument("run_dir", type=Path)
+    # Directory that the design's own imports resolve against. ``python -m``
+    # puts the parent's working directory on sys.path, not the design's, so
+    # without this a design cannot import a sibling module. The parent passes
+    # the original design directory even when it runs a snapshot copy.
+    parser.add_argument("--import-dir", type=Path, default=None)
     args = parser.parse_args(argv)
+    import_dir = args.import_dir if args.import_dir is not None else args.source.resolve().parent
+    sys.path.insert(0, str(import_dir))
     return execute_worker(args.source, args.run_dir)
 
 

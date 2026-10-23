@@ -13,6 +13,28 @@ stable.
 
 ![Materials showcase: aluminum plate, carbon-fiber frame, steel barrel with translucent glass lens, black-oxide bolts, and brass knob](docs/images/materials-output.png)
 
+## Status
+
+- Works: `cadx run`, `inspect`, `render`, `shots`, `evaluate`, `sweep`,
+  `compare`, `bom`, `loop`, `publish`; build123d parts, assemblies with mates,
+  sheet metal with flats and bend tables, materials, mass properties, and the
+  requirement check types listed below. ADRs 0001–0057 are implemented and
+  merged.
+- In progress: none. No ADR is active.
+- Broken or missing: the `symmetry` and `visual` check types raise
+  `ValueError` (specified, not implemented). Proposals are in `LOG.md`.
+
+## Development
+
+- Install (fjord has no `python3-venv`):
+  `python3 -m pip install --user -e '.[cad,render,test]'`.
+- Fast suite: `python3 -m pytest tests/test_<area>.py -q` for the files that
+  cover the change. The repo has no slow-test marker yet, so there is no
+  smaller whole-repo suite.
+- Full suite (gate before merge): `python3 -m pytest tests/ -q`. 303 tests,
+  about 14 minutes on fjord.
+- ADRs are in `docs/adr/`; coverage rationale is in `docs/coverage.md`.
+
 ## Quick Start
 
 ```bash
@@ -162,6 +184,13 @@ checks:
         min: 36
         max: 44
 ```
+
+Each set re-runs the run's `source_snapshot.py` with the original design
+directory on `sys.path`, so a design may import sibling modules (for example
+`from _shared import box`). A set whose design run fails records
+`run_status` and an `errors` list of `{type, message}` from the worker; the
+full traceback stays in that set's `diagnostics.json` under
+`sweeps/<check id>/NNNN/`.
 
 ## Manufacturing package
 

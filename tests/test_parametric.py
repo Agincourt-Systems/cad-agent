@@ -285,3 +285,112 @@ checks:
     errored = [s for s in sweep["sets"] if s.get("run_status") not in (None, "ok")]
     assert errored
     assert errored[0]["checks"] == []
+
+
+def write_sibling_import_design(tmp_path: Path) -> Path:
+    """A design in ``cad/`` that imports a sibling helper module.
+
+    The design lives in a subdirectory so the test's working directory is not
+    the design directory; the sibling import resolves only if cadx puts the
+    design's own directory on the worker's ``sys.path``. The helper also raises
+    for ``width >= 90`` so a sweep set can fail inside the design.
+    """
+
+    cad = tmp_path / "cad"
+    cad.mkdir()
+    (cad / "_helper.py").write_text(
+        """
+def plate_width(params):
+    width = float(params["width"])
+    if width >= 90:
+        raise ValueError(f"width {width} exceeds the stock sheet")
+    return width
+""",
+        encoding="utf-8",
+    )
+    design = cad / "design.py"
+    design.write_text(
+        """
+from _helper import plate_width
+
+from cadx import publish
+
+
+def build(params):
+    width = plate_width(params)
+    publish(
+        "plate",
+        {
+            "bbox": {"min": [0, 0, 0], "max": [width, 20, 4]},
+            "mass_properties": {"volume": width * 80},
+            "topology": {"solids": 1, "faces": 6, "edges": 12, "vertices": 8},
+        },
+        role="final",
+    )
+""",
+        encoding="utf-8",
+    )
+    return design
+
+
+SIBLING_SWEEP = """
+units: mm
+checks:
+  - id: stack_up
+    type: parametric
+    params:
+      - {width: 38}
+      - {width: 99}
+    checks:
+      - id: width_in_range
+        type: dimension
+        target: obj.plate.bbox.size.x
+        min: 36
+        max: 44
+"""
+
+
+def test_parametric_sweep_resolves_sibling_imports(tmp_path):
+    """Swept sets of a design that imports a sibling module run, not error.
+
+    The sweep re-runs ``source_snapshot.py`` from the artifact directory, which
+    has no sibling modules; the original design directory must stay importable.
+    """
+
+    design = write_sibling_import_design(tmp_path)
+    (tmp_path / "params.yaml").write_text("width: 40\n", encoding="utf-8")
+    payload = parse_stdout_json(run_cadx(tmp_path, "run", str(design), "--params", "params.yaml"))
+    assert payload["status"] == "ok", payload["errors"]
+    run_dir = tmp_path / payload["artifact_dir"]
+    requirements = write_requirements(tmp_path, SIBLING_SWEEP)
+
+    parse_stdout_json(run_cadx(tmp_path, "evaluate", str(run_dir), "--requirements", str(requirements)))
+    checks = json.loads((run_dir / "checks.json").read_text(encoding="utf-8"))
+    sweep = next(c for c in checks["checks"] if c["id"] == "stack_up")
+    in_range = next(s for s in sweep["sets"] if s["params"]["width"] == 38)
+    assert in_range["status"] == "pass", in_range
+    assert in_range["checks"][0]["observed"] == 38
+
+
+def test_parametric_failed_set_reports_worker_error(tmp_path):
+    """A set whose design run errors carries the worker's error text.
+
+    Without the message an agent sees only ``run_status: error`` and must dig
+    through the sweep directory to learn why.
+    """
+
+    design = write_sibling_import_design(tmp_path)
+    (tmp_path / "params.yaml").write_text("width: 40\n", encoding="utf-8")
+    payload = parse_stdout_json(run_cadx(tmp_path, "run", str(design), "--params", "params.yaml"))
+    run_dir = tmp_path / payload["artifact_dir"]
+    requirements = write_requirements(tmp_path, SIBLING_SWEEP)
+
+    result = parse_stdout_json(run_cadx(tmp_path, "evaluate", str(run_dir), "--requirements", str(requirements)))
+    assert "stack_up" in result["failed"]
+    checks = json.loads((run_dir / "checks.json").read_text(encoding="utf-8"))
+    sweep = next(c for c in checks["checks"] if c["id"] == "stack_up")
+    errored = next(s for s in sweep["sets"] if s["params"]["width"] == 99)
+    assert errored["status"] == "fail"
+    assert errored["run_status"] == "error"
+    assert errored["errors"][0]["type"] == "ValueError"
+    assert "exceeds the stock sheet" in errored["errors"][0]["message"]

@@ -1464,10 +1464,25 @@ def _payload_from_diagnostics(run_id: str, run_dir: Path, diagnostics: dict[str,
     }
 
 
-def run_design(source: Path, params_path: Path, artifact_root: Path, timeout_seconds: float = 30) -> dict[str, Any]:
-    """Run a design source and create a numbered artifact directory."""
+def run_design(
+    source: Path,
+    params_path: Path,
+    artifact_root: Path,
+    timeout_seconds: float = 30,
+    import_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Run a design source and create a numbered artifact directory.
+
+    ``import_dir`` is the directory placed first on the worker's ``sys.path`` so
+    the design can import sibling modules. It defaults to the source's own
+    directory; a caller that runs a copied snapshot (the parametric sweep) passes
+    the original design directory, because the copy's directory holds no
+    siblings. Returns the compact run payload (``run_id``, ``status``,
+    ``artifact_dir``, ``published``, ``errors``).
+    """
 
     source_path = source.resolve()
+    import_path = (import_dir or source_path.parent).resolve()
     params = load_yaml(params_path)
     run_id, run_dir = next_run_dir(artifact_root)
     run_dir.mkdir(parents=True, exist_ok=False)
@@ -1477,7 +1492,7 @@ def run_design(source: Path, params_path: Path, artifact_root: Path, timeout_sec
 
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", "cadx.worker", str(source_path), str(run_dir)],
+            [sys.executable, "-m", "cadx.worker", str(source_path), str(run_dir), "--import-dir", str(import_path)],
             text=True,
             capture_output=True,
             check=False,

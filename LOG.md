@@ -554,3 +554,28 @@ rebase-onto-master A→B→C→D with a full-suite gate per merge
 (265 → 276 → 290 → 301 green), fast-forward merges only, feature
 branches preserved. Suite grew 259 → 301.
 
+
+## 2026-10-23 — Fix: parametric sweeps lose sibling imports and error text
+
+- Source: `../road-ugv/LOG.md` (ADR 0004 entry) reported that `parametric`
+  sets of `cad/ugv.py` failed with `run_status: error` and no message. Cause:
+  `cadx.worker` runs as `python -m`, so `sys.path` held the caller's working
+  directory, not the design's. road-ugv worked around it by walking
+  `Path(__file__).parents`; the sweep re-runs `source_snapshot.py` from the
+  artifact directory, where that walk finds no `_shared.py`.
+- Fix (bug fix, no ADR): `cadx.runner.run_design` takes `import_dir`
+  (default: the source's directory) and passes `--import-dir` to the worker,
+  which puts it first on `sys.path`. `cadx.evaluate._run_param_set` passes the
+  original design directory from the run's `diagnostics.json` `source`.
+  Failed sets now carry `errors: [{type, message}]`.
+- Red: 2 new tests in `tests/test_parametric.py` failed with
+  `ModuleNotFoundError: _helper`. Green after the fix. Verified on road-ugv's
+  real design: `arm_sweep_clear` ran 5/5 sets and passed.
+- Added the missing README "Status" and "Development" sections required by
+  AGENTS.md. Baseline full suite: 301 passed in 13 m 24 s.
+- Proposal (not implemented): `clearance` (via `_object_by_ref`) raises
+  `KeyError` for an unknown label and aborts the whole `cadx evaluate`, seen
+  when road-ugv ran with `show_envelopes: false`. ADR 0021 made
+  `dimension`/`topology` degrade to a failed check; `clearance` should too.
+- Proposal (not implemented): road-ugv's `sys.path` walk in `cad/ugv.py` is
+  now redundant and can be removed there.
