@@ -579,3 +579,16 @@ branches preserved. Suite grew 259 → 301.
   `dimension`/`topology` degrade to a failed check; `clearance` should too.
 - Proposal (not implemented): road-ugv's `sys.path` walk in `cad/ugv.py` is
   now redundant and can be removed there.
+
+## 2026-10-23 — Fix: AABB clearance with an unknown label aborts evaluate
+
+- Seen when road-ugv's `cad/ugv.py` ran with `show_envelopes: false`: four
+  `clearance` checks name `tyre_env_*` labels that are then unpublished, and
+  the `KeyError` from `_object_by_ref` aborted `cadx evaluate` with no
+  `checks.json`. The `method: exact` path already failed gracefully.
+- Fix (bug fix, no ADR; ADR 0021 contract): `_check_clearance` fails the one
+  check with `error` naming each unknown label or non-`obj.` reference.
+  Removed `_object_by_ref`, which had no other caller.
+- Red: 2 new tests in `tests/test_graceful_evaluation.py` failed (evaluate
+  exited non-zero). Green after the fix. Re-run on road-ugv: all 17 checks
+  scored, the 4 tyre checks fail with `no object 'tyre_env_…'`.

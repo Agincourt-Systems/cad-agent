@@ -198,15 +198,6 @@ def _check_scalar_target(spatial: dict[str, Any], check: dict[str, Any]) -> dict
     }
 
 
-def _object_by_ref(spatial: dict[str, Any], ref: str) -> dict[str, Any]:
-    """Resolve object references like `obj.left` from a check."""
-
-    if not ref.startswith("obj."):
-        raise ValueError(f"unsupported object reference {ref!r}")
-    label = ref.split(".", 1)[1]
-    return _object_index(spatial)[label]
-
-
 def _aabb_clearance(left: dict[str, Any], right: dict[str, Any]) -> float:
     """Compute axis-aligned bounding-box clearance between two objects.
 
@@ -227,10 +218,35 @@ def _aabb_clearance(left: dict[str, Any], right: dict[str, Any]) -> float:
 
 
 def _check_clearance(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str, Any]:
-    """Evaluate minimum AABB clearance between two spatial objects."""
+    """Evaluate minimum AABB clearance between two spatial objects.
+
+    A malformed reference or an unpublished label fails this one check with an
+    ``error`` naming every bad reference, matching the exact method and the ADR
+    0021 contract; it never aborts the evaluation.
+    """
 
     left_ref, right_ref = check["between"]
-    observed = _aabb_clearance(_object_by_ref(spatial, left_ref), _object_by_ref(spatial, right_ref))
+    objects = _object_index(spatial)
+    problems = []
+    for ref in (left_ref, right_ref):
+        try:
+            label = _label_from_ref(ref)
+        except ValueError as exc:
+            problems.append(str(exc))
+            continue
+        if label not in objects:
+            problems.append(f"no object {label!r}")
+    if problems:
+        return {
+            "id": check["id"],
+            "type": "clearance",
+            "method": "aabb",
+            "status": "fail",
+            "error": "; ".join(problems),
+            "between": check["between"],
+            "tolerance": check.get("tolerance", 0),
+        }
+    observed = _aabb_clearance(objects[_label_from_ref(left_ref)], objects[_label_from_ref(right_ref)])
     expected = _numeric_expectation(check)
     tolerance = check.get("tolerance", 0)
     passed = _numeric_status(observed, check)

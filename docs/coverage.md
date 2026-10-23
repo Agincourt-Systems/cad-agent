@@ -95,6 +95,9 @@ CLI is the agent-facing interface. Those tests exercise:
 - Assembly robustness (ADR 0021): the assembly center of mass aggregates physical
   `part`/`final` roles and excludes fixtures, and a mistyped `dimension`/`topology`
   target degrades to a graceful failed check instead of crashing the evaluation.
+  AABB `clearance` follows the same rule (2026-10-23 fix): an unknown label and a
+  reference without `obj.` each fail the check alone while a valid check in the
+  same file still passes (`tests/test_graceful_evaluation.py`).
 
 Known gaps:
 

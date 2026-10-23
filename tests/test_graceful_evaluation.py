@@ -192,6 +192,61 @@ def test_exact_clearance_without_step_export_fails_gracefully(tmp_path):
     assert "STEP" in check["error"]
 
 
+def test_aabb_clearance_unknown_label_fails_gracefully(tmp_path):
+    """An AABB clearance naming an unpublished label fails alone.
+
+    Before the fix the bare ``KeyError`` aborted the whole evaluation, so no
+    ``checks.json`` was written and the valid check beside it was never scored.
+    """
+
+    run_dir = run_synthetic_model(tmp_path)
+    payload, checks = evaluate_checks(
+        tmp_path,
+        run_dir,
+        """
+  - id: ghost_gap
+    type: clearance
+    between: [obj.left, obj.ghost]
+    min: 1
+  - id: real_gap
+    type: clearance
+    between: [obj.left, obj.right]
+    min: 1
+""",
+    )
+
+    assert payload["failed"] == ["ghost_gap"]
+    by_id = {check["id"]: check for check in checks["checks"]}
+    ghost = by_id["ghost_gap"]
+    assert ghost["status"] == "fail"
+    assert ghost["method"] == "aabb"
+    assert "'ghost'" in ghost["error"]
+    assert "'left'" not in ghost["error"]
+    assert by_id["real_gap"]["status"] == "pass"
+    assert by_id["real_gap"]["observed"] == 5
+
+
+def test_aabb_clearance_malformed_reference_fails_gracefully(tmp_path):
+    """A reference without the ``obj.`` prefix fails with the bad reference named."""
+
+    run_dir = run_synthetic_model(tmp_path)
+    payload, checks = evaluate_checks(
+        tmp_path,
+        run_dir,
+        """
+  - id: bad_ref_gap
+    type: clearance
+    between: [left, obj.right]
+    min: 1
+""",
+    )
+
+    assert payload["status"] == "fail"
+    check = checks["checks"][0]
+    assert check["status"] == "fail"
+    assert "'left'" in check["error"]
+
+
 def test_center_of_mass_scalar_index_target_fails_gracefully(tmp_path):
     """A path that indexes into a scalar fails its check, not the evaluation."""
 

@@ -31,7 +31,7 @@ stable.
 - Fast suite: `python3 -m pytest tests/test_<area>.py -q` for the files that
   cover the change. The repo has no slow-test marker yet, so there is no
   smaller whole-repo suite.
-- Full suite (gate before merge): `python3 -m pytest tests/ -q`. 303 tests,
+- Full suite (gate before merge): `python3 -m pytest tests/ -q`. 305 tests,
   about 14 minutes on fjord.
 - ADRs are in `docs/adr/`; coverage rationale is in `docs/coverage.md`.
 
@@ -113,7 +113,8 @@ check `type`s:
   `min`/`max` range with `tolerance`.
 - `topology` — expected solids/faces/edges/vertices counts.
 - `clearance` — minimum gap between two objects; AABB by default, exact BREP with
-  `method: exact`.
+  `method: exact`. An unknown label or a reference without `obj.` fails that
+  check with an `error` naming it; the rest of the file still evaluates.
 - `feature_count` — number of features of a `kind` (e.g. `cylindrical_hole`).
 - `feature_dimension` — a property across features selected by kind.
 - `feature_alignment` — two features (holes) are coaxial and diameter-compatible.
