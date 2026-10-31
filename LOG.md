@@ -592,3 +592,76 @@ branches preserved. Suite grew 259 → 301.
 - Red: 2 new tests in `tests/test_graceful_evaluation.py` failed (evaluate
   exited non-zero). Green after the fix. Re-run on road-ugv: all 17 checks
   scored, the 4 tyre checks fail with `no object 'tyre_env_…'`.
+
+## 2026-10-31 — Fix: `cadx render` crashes on multi-part hollow assemblies
+
+Reported: `cadx render` dies on a multi-part hollow assembly with a
+degenerate SVG arc on grazed sections and with a `ShapeList` → `Compound`
+`TreeError` in `_plane_section`. Three defects, all in
+`src/cadx/renderer.py`, all bug fixes (no ADR).
+
+- **`ShapeList` section pieces.** On build123d 0.10
+  `Solid.intersect(Plane)` returns a `ShapeList` — a plain `list` subclass,
+  not a `Shape` — whenever the cut yields several disjoint non-compound
+  pieces. A hollow part makes that ordinary: a tube cut by a plane through
+  its own axis sections into one face per wall. `_plane_section` appended the
+  list as a single child, so `Compound(children=...)` raised
+  `anytree.TreeError` ("Cannot add non-node object"), and a lone hollow solid
+  returned the bare list to callers that expect a shape. New
+  `_section_pieces` flattens every `intersect` result, so `_plane_section`
+  always returns one shape or `None`.
+- **Grazed section on the camera axis.** `project_to_viewport` aims the camera
+  at `shape.center()` and then calls `gp_Ax2::SetYDirection`, which throws
+  `gp_Dir::Crossed() - result vector has zero norm` when the look direction
+  is (anti)parallel to `viewport_up`. The existing `_nonempty` guard covered
+  only empty shapes, but ordinary geometry reaches it: the `top` and
+  `section_xy` cameras sit on +Z, so a part symmetric about +Z and grazed by
+  its own section plane has a section centroid of exactly `(0, 0, 0)`. A
+  hollow rectangular housing flush with `z = 0` is the minimal case. New
+  `_viewport_up` keeps build123d's `(0, 0, 1)` default for every
+  well-conditioned view and falls back to `(0, 1, 0)` — conventional top-view
+  up — for a camera looking along ±Z. The 1e-6 collinearity tolerance also
+  catches the near-collinear cases, which did not throw but oriented the
+  image off a cross product of ~1e-16.
+- **Degenerate SVG arc.** `ExportSVG` converts every arc into an
+  `svgpathtools.Arc`, whose constructor asserts the two ends differ and no
+  radius is zero, and fails with a bare message-less `AssertionError` that
+  aborts the render. The reachable trigger is a precision mismatch:
+  `ExportSVG` rounds path points to 1e-6 mm (`precision=6`) while OCCT calls a
+  curve closed only within `Precision::Confusion` (1e-7 mm). An arc whose
+  ends are 1e-7..1e-6 mm apart is therefore open to OCCT and a single point
+  to the exporter — and a plane grazing a cylindrical or spherical wall
+  produces exactly that, a near-complete boundary circle with a hair-thin
+  gap, so a whole circle is at stake rather than a sliver. New
+  `_svg_exportable_edges` replaces such an arc with the closed curve it rounds
+  to and drops the arcs that genuinely cannot be drawn (zero radius, zero
+  ellipse minor radius from a circle projected exactly edge-on, and arcs below
+  the exporter's own 1e-6 length floor, which it skipped with a warning while
+  leaving an empty path element behind). `_write_projection_svg` now passes
+  `precision=SVG_PRECISION` to the exporter so the filter and the exporter
+  cannot drift apart.
+
+Red: 10 of 11 new tests in `tests/test_hollow_section_render.py` failed, the
+end-to-end one with the reported `TreeError`. Green after the fixes. A
+1500-case randomized sweep of grazed/hollow sections (hollow tubes, shells,
+housings, cones, tori, cross-bored parts, rotated and offset so a section
+plane lands on a feature boundary) reproduced the camera crash 7 times and
+skipped 18 sub-1e-6 arcs with warnings before the fix.
+
+Note on scope: the degenerate-arc mechanism is confirmed — a 3e-7 mm gap in a
+62.8 mm circle aborts `ExportSVG` — but the sweep never produced one straight
+out of the hidden-line projector, so the exact source geometry from the
+report is unconfirmed. If a design still fails, the traceback will say which
+arc the projector emitted.
+
+Verified after the fix: the full suite is `316 passed in 611.30s`, which is the
+305-test baseline plus the 11 new tests, with no regressions. The same 1500-case
+sweep re-run against the fixed renderer reports 0 crashes in every category and
+0 skipped-arc warnings, with a worst arc end-gap of 2.83e-6 mm — above the 1e-6
+rounding grid, so no arc now lands in the window that aborts the exporter.
+
+Process note: the two verification runs above both finished within 40 minutes,
+but three background waiters polling `pgrep -f "pytest tests/"` matched their
+own command lines and span for 12 hours without reporting, and the gate log was
+written with a doubled `-q` that suppresses pytest's result line. Both are in
+LESSONS.md.

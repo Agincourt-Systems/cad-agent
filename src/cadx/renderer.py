@@ -10,7 +10,7 @@ from __future__ import annotations
 from math import sqrt
 from pathlib import Path
 import struct
-from typing import Any
+from typing import Any, Iterable
 
 from cadx.files import read_json, write_json
 
@@ -596,12 +596,12 @@ def _shaded_batches(run_dir: Path) -> tuple[list[dict[str, Any]], list[dict[str,
 def _nonempty(shape: Any) -> bool:
     """True if a build123d shape carries any projectable geometry.
 
-    ``project_to_viewport`` on an empty shape collapses its look point to the
-    origin; for a viewport camera on the +Z axis (top / section_xy at
-    ``(0,0,100)``) the look direction then lands (anti)parallel to the default
-    ``viewport_up=(0,0,1)`` and OCCT's ``gp_Dir::Crossed`` throws "zero norm".
-    Guarding on emptiness here removes that crash class regardless of why the
-    shape came in empty (e.g. an empty ``Compound.intersect`` result).
+    ``project_to_viewport`` raises ``ValueError`` on an empty shape, and an
+    empty shape also collapses its look point to the origin, which is one way
+    into the collinear-camera crash that ``_viewport_up`` now handles for all
+    shapes.  Screening empty shapes here keeps them out of the view set
+    regardless of why they came in empty (e.g. an empty ``Compound.intersect``
+    result).
     """
 
     if shape is None:
@@ -610,6 +610,26 @@ def _nonempty(shape: Any) -> bool:
         return bool(list(shape.faces()) or list(shape.edges()))
     except Exception:
         return False
+
+
+def _section_pieces(piece: Any) -> list[Any]:
+    """Flatten one ``intersect`` result into individual projectable shapes.
+
+    ``Shape.intersect`` on build123d 0.10 returns a ``ShapeList`` — a plain
+    ``list`` subclass, *not* a ``Shape`` — whenever the cut yields several
+    disjoint non-compound pieces.  A hollow part makes that the common case: a
+    tube cut by a plane through its axis sections into one face per wall.  The
+    list is not a tree node, so handing it to ``Compound(children=...)`` raised
+    ``anytree.TreeError`` ("Cannot add non-node object"), and a lone hollow
+    solid returned the bare list to callers that expect a shape.  Returns the
+    empty list when nothing projectable came back.
+    """
+
+    if piece is None:
+        return []
+    if isinstance(piece, list):
+        return [member for member in piece if _nonempty(member)]
+    return [piece] if _nonempty(piece) else []
 
 
 def _plane_section(shape: Any, plane: Any) -> Any:
@@ -621,22 +641,164 @@ def _plane_section(shape: Any, plane: Any) -> Any:
     recombining the non-empty pieces restores real assembly sections; for a
     single-solid import ``.solids()`` yields the one solid, so single-part
     behaviour is unchanged.  Returns ``None`` when nothing crosses the plane.
+
+    Every result is normalized through ``_section_pieces``, so the return value
+    is always a single build123d shape (or ``None``) however many disjoint
+    faces the cut produced.
     """
 
     from build123d import Compound
 
     solids = list(shape.solids())
     if not solids:
-        piece = shape.intersect(plane)
-        return piece if _nonempty(piece) else None
-    pieces = []
-    for solid in solids:
-        piece = solid.intersect(plane)
-        if _nonempty(piece):
-            pieces.append(piece)
+        pieces = _section_pieces(shape.intersect(plane))
+    else:
+        pieces = []
+        for solid in solids:
+            pieces.extend(_section_pieces(solid.intersect(plane)))
     if not pieces:
         return None
     return pieces[0] if len(pieces) == 1 else Compound(children=pieces)
+
+
+DEFAULT_VIEWPORT_UP = (0.0, 0.0, 1.0)
+FALLBACK_VIEWPORT_UP = (0.0, 1.0, 0.0)
+# |look direction x up| is the sine of the angle between them, so it runs from
+# 1.0 (perpendicular, the well-conditioned case) down to 0.0 (collinear, where
+# OCCT throws).  Below this value the camera's screen axes are numerical noise;
+# a part merely off the camera axis is orders of magnitude above it.
+_UP_COLLINEAR_TOLERANCE = 1e-6
+
+
+def _viewport_up(item: Any, viewport_origin: tuple[int, int, int]) -> tuple[float, float, float]:
+    """Pick an up vector that is not collinear with the camera's look direction.
+
+    ``project_to_viewport`` aims the camera from ``viewport_origin`` at
+    ``item.center()`` and then calls ``gp_Ax2::SetYDirection`` with
+    ``viewport_up``, which throws ``gp_Dir::Crossed() - result vector has zero
+    norm`` when the two are (anti)parallel.  That is reached by ordinary
+    geometry, not just by empty shapes (see ``_nonempty``): the ``top`` and
+    ``section_xy`` cameras sit on +Z, so any section whose centroid lands on
+    that axis crashes — a hollow housing grazed by its own section plane is
+    exactly symmetric, and its section centroid is exactly ``(0, 0, 0)``.
+    Near-collinear cases do not throw but orient the image off a cross product
+    of ~1e-16, so the fallback covers those too and makes the view stable.
+
+    Returns ``(0, 0, 1)`` — build123d's own default, which keeps every
+    well-conditioned view byte-identical — or ``(0, 1, 0)`` for a camera
+    looking along ±Z, where +Y up is the conventional top-view orientation.
+    """
+
+    from build123d import Vector
+
+    look_direction = (Vector(viewport_origin) - item.center()).normalized()
+    if look_direction.cross(Vector(DEFAULT_VIEWPORT_UP)).length > _UP_COLLINEAR_TOLERANCE:
+        return DEFAULT_VIEWPORT_UP
+    return FALLBACK_VIEWPORT_UP
+
+
+# ``ExportSVG`` rounds every path coordinate to this many decimal places (it is
+# the exporter's own default).  The arc filter below has to round on the same
+# grid or it cannot see the collapse that breaks the exporter.
+SVG_PRECISION = 6
+# ``ExportSVG`` itself skips arcs shorter than this, with a warning, leaving an
+# empty path element behind.
+_MIN_ARC_LENGTH = 1e-6
+
+
+def _rounds_to_one_point(first: Any, second: Any) -> bool:
+    """True if two ``gp_Pnt`` collapse to one point at the SVG precision."""
+
+    return all(
+        round(getattr(first, axis)(), SVG_PRECISION)
+        == round(getattr(second, axis)(), SVG_PRECISION)
+        for axis in ("X", "Y", "Z")
+    )
+
+
+def _closed_arc(primitive: Any, is_circle: bool) -> Any:
+    """Rebuild a ``gp_Circ``/``gp_Elips`` as one closed build123d edge."""
+
+    from build123d import Edge, Plane
+
+    location = primitive.Location()
+    x_direction = primitive.XAxis().Direction()
+    normal = primitive.Axis().Direction()
+    plane = Plane(
+        origin=(location.X(), location.Y(), location.Z()),
+        x_dir=(x_direction.X(), x_direction.Y(), x_direction.Z()),
+        z_dir=(normal.X(), normal.Y(), normal.Z()),
+    )
+    if is_circle:
+        return Edge.make_circle(primitive.Radius(), plane)
+    return Edge.make_ellipse(primitive.MajorRadius(), primitive.MinorRadius(), plane)
+
+
+def _exportable_arc(edge: Any, is_circle: bool) -> Any | None:
+    """Make one projected arc safe for ``ExportSVG``, or drop it.
+
+    ``ExportSVG`` converts every arc into an ``svgpathtools.Arc``, whose
+    constructor asserts that the two end points differ and that no radius is
+    zero — and it fails that assertion with a bare, message-less
+    ``AssertionError`` that aborts the whole render.  Two projected arcs reach
+    it:
+
+    * **A rounding collapse.** OCCT calls a curve closed only once its ends are
+      within ``Precision::Confusion`` (1e-7 mm), while the exporter rounds path
+      points to 1e-6 mm.  An arc whose ends are 1e-7..1e-6 mm apart is
+      therefore open to OCCT and a single point to the exporter.  A section
+      plane grazing a cylindrical or spherical wall is how one appears: the
+      boundary circle comes back as a near-complete arc with a hair-thin gap,
+      so the whole circle — not some sliver — is at stake.  Such an arc is
+      geometrically a closed curve, so it is replaced by one.
+    * **A flattened or empty arc** — a zero radius, or a zero ellipse minor
+      radius from a circle projected exactly edge-on — and arcs below the
+      exporter's own 1e-6 length floor.  These span at most one rounding step,
+      so they are dropped; drawing them is not possible and skipping them
+      costs nothing visible.
+
+    Returns the edge unchanged when it is already safe to export.
+    """
+
+    if edge.length < _MIN_ARC_LENGTH:
+        return None
+    curve = edge.geom_adaptor()
+    primitive = curve.Circle() if is_circle else curve.Ellipse()
+    radii = (
+        (primitive.Radius(),)
+        if is_circle
+        else (primitive.MajorRadius(), primitive.MinorRadius())
+    )
+    if min(radii) <= 0.0:
+        return None
+    if curve.IsClosed():
+        return edge
+    start = curve.Value(curve.FirstParameter())
+    end = curve.Value(curve.LastParameter())
+    if _rounds_to_one_point(start, end):
+        return _closed_arc(primitive, is_circle)
+    return edge
+
+
+def _svg_exportable_edges(edges: Iterable[Any]) -> list[Any]:
+    """Filter projected edges down to the ones ``ExportSVG`` can render.
+
+    Only circles and ellipses are inspected (see ``_exportable_arc``); every
+    other edge passes through untouched and in its original order, so a
+    well-conditioned projection exports exactly as before.
+    """
+
+    from build123d import GeomType
+
+    exportable = []
+    for edge in edges:
+        if edge.geom_type not in (GeomType.CIRCLE, GeomType.ELLIPSE):
+            exportable.append(edge)
+            continue
+        arc = _exportable_arc(edge, edge.geom_type is GeomType.CIRCLE)
+        if arc is not None:
+            exportable.append(arc)
+    return exportable
 
 
 def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, int, int]) -> bool:
@@ -653,15 +815,19 @@ def _write_projection_svg(shape: Any, target: Path, viewport_origin: tuple[int, 
     if not shapes:
         return False
 
-    exporter = ExportSVG(scale=10, margin=2)
+    exporter = ExportSVG(scale=10, margin=2, precision=SVG_PRECISION)
     exporter.add_layer("Visible", line_color=(20, 20, 20))
     exporter.add_layer("Hidden", line_color=(130, 130, 130), line_type=LineType.ISO_DOT)
 
     for item in shapes:
-        visible, hidden = item.project_to_viewport(viewport_origin)
-        if len(visible) > 0:
+        visible, hidden = item.project_to_viewport(
+            viewport_origin, viewport_up=_viewport_up(item, viewport_origin)
+        )
+        visible = _svg_exportable_edges(visible)
+        hidden = _svg_exportable_edges(hidden)
+        if visible:
             exporter.add_shape(visible, layer="Visible")
-        if len(hidden) > 0:
+        if hidden:
             exporter.add_shape(hidden, layer="Hidden")
     target.parent.mkdir(parents=True, exist_ok=True)
     exporter.write(target)

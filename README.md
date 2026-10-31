@@ -28,11 +28,13 @@ stable.
 
 - Install (fjord has no `python3-venv`):
   `python3 -m pip install --user -e '.[cad,render,test]'`.
-- Fast suite: `python3 -m pytest tests/test_<area>.py -q` for the files that
+- Fast suite: `python3 -m pytest tests/test_<area>.py` for the files that
   cover the change. The repo has no slow-test marker yet, so there is no
   smaller whole-repo suite.
-- Full suite (gate before merge): `python3 -m pytest tests/ -q`. 305 tests,
-  about 14 minutes on fjord.
+- Full suite (gate before merge): `python3 -m pytest tests/`. 316 tests, about
+  10 minutes on fjord. Do not add `-q`: `addopts` in `pyproject.toml` already
+  sets it, and a second one suppresses the `N passed` result line that makes
+  the run readable as a gate.
 - ADRs are in `docs/adr/`; coverage rationale is in `docs/coverage.md`.
 
 ## Quick Start
