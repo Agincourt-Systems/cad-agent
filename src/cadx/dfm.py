@@ -13,11 +13,11 @@ Each rule's limit is either an explicit absolute ``min`` or ``factor * thickness
 the owning object's smallest bounding-box dimension. A rule whose features are
 absent (e.g. no ``slot`` or ``bend`` features) simply contributes no violations.
 
-Note on bends: ADR 0016 records a part's bends in ``bends.json`` (consumed by the
-``bend`` check), not as ``spatial.json`` features. The ``min_bend_radius`` and
-``hole_to_bend`` rules here therefore operate on explicitly published
-``kind="bend"`` features, so they are inert for the standard sheet-metal flow
-until such a feature is published.
+Note on bends: the bend rules (``min_bend_radius``, ``hole_to_bend``,
+``min_flange``) read ``kind="bend"`` features from ``spatial.json``, not
+``bends.json``. ``publish_sheet_metal`` publishes one such feature per bend
+(ADR 0033), so the rules bind on any part built through the sheet-metal API; a
+hand-modelled bent part needs its bends published with ``publish_feature``.
 """
 
 from __future__ import annotations
@@ -507,6 +507,8 @@ def evaluate_manufacturability(spatial: dict[str, Any], check: dict[str, Any]) -
     Optional ``object``/``kind`` filter the features considered. Each rule entry
     (`{rule, min?, factor?, severity?}`) produces zero or more violations; a
     ``severity: warn`` rule surfaces in ``warnings`` without failing the check.
+    A rule entry whose ``rule`` is not a key of ``_RULES`` fails the check with
+    an ``error`` naming it; the known rules in the same check still run.
 
     ADR 0051 (D-029): ``exclude_detected: true`` drops every auto-detected feature
     (those the inspector tags ``detected: true``) from the selection before any
@@ -544,21 +546,29 @@ def evaluate_manufacturability(spatial: dict[str, Any], check: dict[str, Any]) -
 
     violations: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    unknown: list[Any] = []
     for rule in check.get("rules", []):
-        evaluator = _RULES.get(rule["rule"])
+        name = rule.get("rule") if isinstance(rule, dict) else None
+        evaluator = _RULES.get(name) if isinstance(name, str) else None
         if evaluator is None:
+            # A rule the evaluator does not know (most often a typo) must not be
+            # skipped: the check would pass with that rule never applied.
+            unknown.append(name if name is not None else rule)
             continue
         severity = rule.get("severity", "fail")
         for found in evaluator(rule, selected, index, check):
             found["severity"] = severity
             (warnings if severity == "warn" else violations).append(found)
 
-    return {
+    result = {
         "id": check["id"],
         "type": "manufacturability",
-        "status": "fail" if violations else "pass",
+        "status": "fail" if violations or unknown else "pass",
         "material": check.get("material"),
         "thickness": _resolve_thickness(check, reported_obj),
         "violations": violations,
         "warnings": warnings,
     }
+    if unknown:
+        result["error"] = f"unknown rule(s) {unknown!r}; expected one of {sorted(_RULES)}"
+    return result

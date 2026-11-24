@@ -51,3 +51,28 @@
   progress dots and so could not be read as a gate; it looked truncated. Do not
   repeat a flag the project config already sets, and treat a gate log with no
   result line as no result.
+
+- 2026-11-24: "One bad item aborts the whole command" was fixed as a separate
+  bug five times (ADRs 0021, 0022, 0031 and two fixes in October 2026), and a
+  review then found eight more instances in the evaluator alone. Each fix
+  guarded the reported input and left its siblings. When a second bug of the
+  same class appears, put the guard at the boundary that all instances pass
+  through (`evaluate._evaluate_check` now), and test the rule with a
+  parametrized list of malformed inputs instead of one test per report.
+
+- 2026-11-24: Optional clauses fail open. `_numeric_status` treats `equals`,
+  `min`, and `max` as each optional, so a check with a typo in the key passed
+  with nothing compared; an unknown DFM rule name was skipped the same way.
+  In a gate, "nothing to check" must be a failure. When every clause of a
+  check is optional, assert that at least one is present.
+
+- 2026-11-24: `except Exception: value = 0.0` in a measurement converts "could
+  not measure" into "measured zero". In `interference` that made every overlap
+  pass when a kernel upgrade changed `intersect` (D-001). A measurement that
+  fails must produce an error record, never a neutral number.
+
+- 2026-11-24: An axis-aligned bounding box only measures a feature whose axis
+  is a coordinate axis. Feature detection runs on placed parts, so any test
+  that uses a bbox extent as a diameter or a depth must first move the feature
+  into a frame aligned with its own axis. Test geometric detectors under a
+  non-principal rotation, not only at identity.

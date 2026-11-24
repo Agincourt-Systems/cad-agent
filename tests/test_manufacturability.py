@@ -629,8 +629,12 @@ def test_min_web_ignores_unsourced_features(tmp_path):
     assert _violation_features(check, "min_web") == set()
 
 
-def test_unknown_rule_and_passing_slot(tmp_path):
-    """An unrecognized rule name is skipped; a wide-enough slot passes."""
+def test_unknown_rule_fails_and_wide_slot_has_no_violation(tmp_path):
+    """An unrecognized rule name fails the check; a wide-enough slot does not.
+
+    Until the 2026-11-24 review an unknown rule was skipped, so a mistyped rule
+    name left the check green with that rule never applied (LOG.md).
+    """
 
     run_dir = _run_model(
         tmp_path,
@@ -663,9 +667,11 @@ def test_unknown_rule_and_passing_slot(tmp_path):
             """,
         )
     )
-    # Slot width 6 >= thickness 4 passes, and the unknown rule contributes nothing.
-    assert check["status"] == "pass"
+    # Slot width 6 >= thickness 4, so the known rule finds nothing; the unknown
+    # rule alone fails the check and is named.
     assert check["violations"] == []
+    assert check["status"] == "fail"
+    assert "not_a_real_rule" in check["error"]
 
 
 # --- ADR 0043: min_flange rule (D-022) ---------------------------------------

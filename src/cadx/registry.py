@@ -62,6 +62,24 @@ _MATE_KIND_POSES: dict[str, tuple[str, ...]] = {
 }
 
 
+def _require_unused_label(label: str) -> None:
+    """Reject a second publication under a label that is already published.
+
+    A label is the part's identity everywhere downstream: every export is
+    written to ``<label>.<ext>`` and every check resolves ``obj.<label>``
+    through a label-keyed index. A repeated label therefore overwrites the
+    first part's files and hides it from checks, with no warning. Raising here
+    attributes the mistake to the design line that made it. ``publish`` and
+    ``publish_sheet_metal`` share one namespace; ``publish_flat`` does not,
+    because an explicit flat deliberately reuses its part's label.
+    """
+
+    if any(entry["label"] == label for entry in _PUBLISHED):
+        raise ValueError(
+            f"label {label!r} is already published; each published object needs a unique label"
+        )
+
+
 def mate(
     to: str,
     *,
@@ -163,6 +181,9 @@ def publish(
     normalized geometry facts. The dictionary form keeps unit tests independent
     from a full CAD kernel installation.
 
+    ``label`` must be unique among published objects (including sheet-metal
+    parts); a repeated label raises :class:`ValueError`.
+
     ``placement`` is an optional build123d ``Location`` that positions the part
     in a common assembly frame. When supplied, the harness applies it before
     computing bounding boxes, mass properties, and exports, so cross-part checks
@@ -186,6 +207,7 @@ def publish(
 
     if placement is not None and mate is not None:
         raise ValueError("publish() accepts either placement or mate, not both")
+    _require_unused_label(label)
 
     # ADR 0055 (D-031): validate the unit first (a typo fails loudly even when no
     # density is supplied), then normalize an explicit density to g/mm³ so every
@@ -280,6 +302,7 @@ def publish_sheet_metal(
 
     if placement is not None and mate is not None:
         raise ValueError("publish_sheet_metal() accepts either placement or mate, not both")
+    _require_unused_label(label)
 
     # ADR 0050: serialize the flat blank's own description — developed length,
     # blank width, sheet thickness — as a ``sheet`` metadata block, so the DFM

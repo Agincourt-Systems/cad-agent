@@ -31,8 +31,8 @@ stable.
 - Fast suite: `python3 -m pytest tests/test_<area>.py` for the files that
   cover the change. The repo has no slow-test marker yet, so there is no
   smaller whole-repo suite.
-- Full suite (gate before merge): `python3 -m pytest tests/`. 316 tests, about
-  10 minutes on fjord. Do not add `-q`: `addopts` in `pyproject.toml` already
+- Full suite (gate before merge): `python3 -m pytest tests/`. 356 tests, about
+  11 minutes on fjord. Do not add `-q`: `addopts` in `pyproject.toml` already
   sets it, and a second one suppresses the `N passed` result line that makes
   the run readable as a gate.
 - ADRs are in `docs/adr/`; coverage rationale is in `docs/coverage.md`.
@@ -95,10 +95,16 @@ it from the run rather than assuming a fixed list:
 
 - A **combined `assembly.step`/`.stl`/`.glb`** is emitted only when a run has
   **≥2 real parts**; a single-part run exports just that one part.
-- A **lone constant-thickness box auto-flattens to a DXF** flat pattern even
-  when it was not published as a sheet-metal part (this is the ADR 0013
-  flat-pattern path recognizing a plate-like solid). Multi-part and
-  non-plate runs do not.
+- **Every published constant-thickness prism auto-flattens to `<label>.dxf`**
+  even when it was not published as a sheet-metal part (this is the ADR 0013
+  flat-pattern path recognizing a plate-like solid). This holds in single-part
+  and multi-part runs alike. A solid that is not a constant-thickness prism is
+  skipped with an `autoflatten_skipped` warning.
+
+Labels must be unique within a run: a second `publish` or
+`publish_sheet_metal` with a label that is already published raises a
+`ValueError` at that design line, because each export is written to
+`<label>.<ext>` and each check resolves `obj.<label>`.
 
 `diagnostics.json` lists every export the run actually wrote; treat it as the
 authoritative artifact index.
@@ -171,6 +177,21 @@ implemented**; a design that uses them will get a clear `ValueError`. Any other
 unknown `type` likewise raises a `ValueError` naming the type rather than silently
 passing.
 
+A check of a known type never aborts the evaluation and never passes without
+comparing something:
+
+- A malformed check (a missing key, a wrong shape, a feature without the
+  property the check needs, a kernel error) fails alone with an `error`, and
+  the other checks still evaluate. An entry with no `id` is reported as
+  `check[<position>]`.
+- A `dimension`, `topology`, or `clearance` check with none of `equals`,
+  `min`, `max` fails; so does a `manufacturability` check that names an
+  unknown rule, and a `stability` check that sets `min_tip_angle_deg` without
+  a positive `com_height`.
+- An `interference` pair that cannot be measured (unreadable STEP, kernel
+  failure) fails the check; it is not counted as "no overlap".
+- `report.md` prints the `error` of each failed check.
+
 A `parametric` example:
 
 ```yaml
@@ -190,7 +211,9 @@ checks:
 
 Each set re-runs the run's `source_snapshot.py` with the original design
 directory on `sys.path`, so a design may import sibling modules (for example
-`from _shared import box`). A set whose design run fails records
+`from _shared import box`). The `<check id>` directory name is the id with
+every character outside `[A-Za-z0-9._-]` replaced by `_`, so it always stays
+inside `sweeps/`. A set whose design run fails records
 `run_status` and an `errors` list of `{type, message}` from the worker; the
 full traceback stays in that set's `diagnostics.json` under
 `sweeps/<check id>/NNNN/`.

@@ -7,6 +7,7 @@ load or visually inspect the underlying geometry.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from math import acos, atan2, degrees, sqrt
 from typing import Any
@@ -47,6 +48,20 @@ def _numeric_expectation(check: dict[str, Any]) -> Any:
     if "max" in check:
         expected["max"] = check["max"]
     return expected
+
+
+def _missing_expectation_error(check: dict[str, Any]) -> str | None:
+    """Return an error when a numeric check states nothing to compare against.
+
+    ``_numeric_status`` treats each of ``equals``/``min``/``max`` as optional, so
+    a check carrying none of them (most often a typo such as ``equal:``) would
+    pass with nothing compared. Callers fail the check with this message
+    instead, so a gate can never go green on an unstated requirement.
+    """
+
+    if any(key in check for key in ("equals", "min", "max")):
+        return None
+    return "check declares none of 'equals', 'min', 'max'; there is nothing to compare"
 
 
 def _numeric_status(observed: float, check: dict[str, Any]) -> bool:
@@ -179,6 +194,9 @@ def _check_scalar_target(spatial: dict[str, Any], check: dict[str, Any]) -> dict
     # Resolve against the (possibly frame-rewritten) target without mutating the
     # caller's check dict.
     check = {**check, "target": effective_target}
+    missing = _missing_expectation_error(check)
+    if missing is not None:
+        return {"id": check["id"], "type": check["type"], "status": "fail", "error": missing}
     observed, error = _resolve_dimension_or_error(spatial, check)
     if error is not None:
         return error
@@ -236,6 +254,9 @@ def _check_clearance(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str
             continue
         if label not in objects:
             problems.append(f"no object {label!r}")
+    missing = _missing_expectation_error(check)
+    if missing is not None:
+        problems.append(missing)
     if problems:
         return {
             "id": check["id"],
@@ -316,6 +337,9 @@ def _check_exact_clearance(run_dir: Path, check: dict[str, Any]) -> dict[str, An
     """Evaluate exact BREP clearance from exported STEP artifacts."""
 
     left_ref, right_ref = check["between"]
+    missing = _missing_expectation_error(check)
+    if missing is not None:
+        return _exact_clearance_failure(check, missing)
     try:
         left_label = _label_from_ref(left_ref)
         right_label = _label_from_ref(right_ref)
@@ -434,6 +458,17 @@ def _resolve_features(spatial: dict[str, Any], selector: dict[str, Any]) -> tupl
     return matches, None if matches else f"no feature matching {selector!r}"
 
 
+def _vector3(value: Any) -> list[float] | None:
+    """Return ``value`` as three floats, or ``None`` when it is not a 3-vector."""
+
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        return None
+    try:
+        return [float(component) for component in value]
+    except (TypeError, ValueError):
+        return None
+
+
 def _unit_vector(vector: list[float]) -> list[float]:
     """Return a unit vector, preserving the zero vector."""
 
@@ -487,6 +522,23 @@ def _check_feature_alignment(spatial: dict[str, Any], check: dict[str, Any]) -> 
             "features": [selector_a.get("id"), selector_b.get("id")],
             "tolerance": tolerance,
         }
+
+    # Alignment needs a center and an axis on every candidate. An explicit
+    # ``publish_feature`` may omit ``axis`` (the starter design does), and the
+    # inspector keeps that record over the detected one, so name the deficient
+    # feature instead of failing on a bare ``KeyError: 'axis'``.
+    for feature in [*features_a, *features_b]:
+        absent = [key for key in ("center", "axis") if _vector3(feature.get(key)) is None]
+        if absent:
+            return {
+                "id": check["id"],
+                "type": "feature_alignment",
+                "status": "fail",
+                "error": f"feature {feature.get('id')!r} has no usable {' or '.join(repr(key) for key in absent)}; "
+                "alignment needs a 3-vector center and axis on every selected feature",
+                "features": [selector_a.get("id"), selector_b.get("id")],
+                "tolerance": tolerance,
+            }
 
     # When a selector matches several features (e.g. a whole bolt pattern), pair
     # the closest-to-coaxial features. This asks "does each hole on A have a
@@ -560,7 +612,10 @@ def _interference_objects(
     index = _object_index(spatial)
     selected: list[dict[str, Any]] = []
     for ref in check["between"]:
-        label = _label_from_ref(ref)
+        try:
+            label = _label_from_ref(ref)
+        except (ValueError, AttributeError) as exc:
+            return None, str(exc)
         if label not in index:
             return None, f"no object {ref!r}"
         selected.append(index[label])
@@ -574,6 +629,11 @@ def _check_interference(spatial: dict[str, Any], check: dict[str, Any], run_dir:
     (``distance()`` cannot distinguish a true overlap from a face-to-face touch —
     both are 0). A synthetic publication with no STEP falls back to AABB overlap
     so evaluator logic stays testable without a CAD kernel.
+
+    A STEP that cannot be loaded, or a pair whose intersection the kernel
+    cannot compute, fails the check with an ``error`` naming it. An unmeasured
+    pair is never counted as "no overlap": that is how a kernel API change once
+    made every overlap pass (ADR 0030).
     """
 
     tolerance = float(check.get("tolerance", 1e-6))
@@ -596,20 +656,37 @@ def _check_interference(spatial: dict[str, Any], check: dict[str, Any], run_dir:
     use_exact = len(selected) >= 2 and all(obj["label"] in step_index for obj in selected)
     pairs: list[list[str]] = []
     overlaps: list[dict[str, Any]] = []
+    errors: list[str] = []
 
     if use_exact:
         from build123d import import_step
 
-        shapes = {obj["label"]: import_step(step_index[obj["label"]]) for obj in selected}
+        shapes: dict[str, Any] = {}
+        for obj in selected:
+            label = obj["label"]
+            try:
+                shape = import_step(step_index[label])
+                # Depending on the OCCT version a garbage file either raises or
+                # imports as an empty shape; treat both as unreadable.
+                if not list(shape.faces()):
+                    raise ValueError("STEP import produced no geometry")
+                shapes[label] = shape
+            except Exception as exc:
+                errors.append(f"could not load STEP for {label!r}: {exc}")
         for left_index in range(len(selected)):
             for right_index in range(left_index + 1, len(selected)):
                 left_label = selected[left_index]["label"]
                 right_label = selected[right_index]["label"]
+                if left_label not in shapes or right_label not in shapes:
+                    continue  # already reported as an unreadable STEP
                 try:
                     intersection = shapes[left_label].intersect(shapes[right_label])
                     volume = float(intersection.volume) if intersection is not None else 0.0
-                except Exception:
-                    volume = 0.0
+                except Exception as exc:
+                    errors.append(
+                        f"could not measure interference between {left_label!r} and {right_label!r}: {exc}"
+                    )
+                    continue
                 if volume > tolerance:
                     pairs.append([left_label, right_label])
                     overlaps.append({"labels": [left_label, right_label], "volume": volume})
@@ -622,14 +699,17 @@ def _check_interference(spatial: dict[str, Any], check: dict[str, Any], run_dir:
                     pairs.append([left["label"], right["label"]])
                     overlaps.append({"labels": [left["label"], right["label"]], "volume": None})
 
-    return {
+    result: dict[str, Any] = {
         "id": check["id"],
         "type": "interference",
-        "status": "pass" if not pairs else "fail",
+        "status": "pass" if not pairs and not errors else "fail",
         "pairs": pairs,
         "overlaps": overlaps,
         "tolerance": tolerance,
     }
+    if errors:
+        result["error"] = "; ".join(errors)
+    return result
 
 
 def _resolve_center_of_mass(spatial: dict[str, Any], target: str) -> tuple[list[float] | None, str | None]:
@@ -793,6 +873,11 @@ def _check_stability(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str
         result["tip_angle_deg"] = tip_angle_deg
         if "min_tip_angle_deg" in check:
             passed = passed and tip_angle_deg >= float(check["min_tip_angle_deg"])
+    elif "min_tip_angle_deg" in check:
+        # The tip angle is atan2(margin, com_height); without a positive height
+        # the gate cannot be judged, and skipping it would pass it unexamined.
+        passed = False
+        result["error"] = "min_tip_angle_deg requires a positive 'com_height'"
     result["status"] = "pass" if passed else "fail"
     return result
 
@@ -890,6 +975,26 @@ def _range_violations(set_run_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+def _sweep_dir_name(check_id: Any) -> str:
+    """Map a check id to one safe directory name under ``sweeps/``.
+
+    The sweep directory is deleted and recreated on every evaluation, and a
+    check id is free text from ``requirements.yaml``. Used as a path, an id of
+    ``..`` deletes the run directory and an absolute id deletes that path.
+    Every character outside ``[A-Za-z0-9._-]`` becomes ``_``, and a name made
+    only of dots is prefixed, so the result is always a single component that
+    stays inside ``sweeps/``. Ordinary ids are unchanged. Two ids that differ
+    only in replaced characters share a directory; sweeps run one at a time
+    and each is read before the next starts, so only the leftover artifacts
+    of the earlier one are lost.
+    """
+
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", str(check_id))
+    if not name.strip("."):
+        name = f"_{name}"
+    return name
+
+
 def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> dict[str, Any]:
     """Run the design across parameter sets and aggregate ordinary sub-checks.
 
@@ -897,12 +1002,16 @@ def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> d
     into ``<run_dir>/sweeps/<check id>/NNNN`` and the listed sub-checks are
     evaluated against that set's ``spatial.json``. The aggregate passes only when
     every set passes. The sweep directory is cleared each evaluation so re-running
-    is idempotent.
+    is idempotent; its name is the check id made path-safe by
+    :func:`_sweep_dir_name`.
     """
 
     import shutil
 
-    sweep_root = run_dir / "sweeps" / check["id"]
+    # Read the required keys before touching the filesystem, so a malformed
+    # check fails without first deleting an earlier sweep's artifacts.
+    param_sets = check["params"]
+    sweep_root = run_dir / "sweeps" / _sweep_dir_name(check["id"])
     if sweep_root.exists():
         shutil.rmtree(sweep_root)
     sweep_root.mkdir(parents=True, exist_ok=True)
@@ -914,7 +1023,7 @@ def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> d
     fail_on_range = bool(check.get("fail_on_range_violation", False))
 
     sets: list[dict[str, Any]] = []
-    for params in check["params"]:
+    for params in param_sets:
         set_run_dir, status, errors = _run_param_set(run_dir, params, sweep_root, timeout)
         if status != "ok":
             # Carry the worker's error type and message (traceback dropped to
@@ -925,7 +1034,10 @@ def _check_parametric(run_dir: Path, check: dict[str, Any], timeout: float) -> d
             )
             continue
         spatial = read_json(set_run_dir / "spatial.json")
-        sub_checks = [_evaluate_check(spatial, sub, set_run_dir, timeout) for sub in check.get("checks", [])]
+        sub_checks = [
+            _evaluate_check(spatial, sub, set_run_dir, timeout, position)
+            for position, sub in enumerate(check.get("checks", []))
+        ]
         range_violations = _range_violations(set_run_dir) if fail_on_range else []
         set_passed = all(result["status"] == "pass" for result in sub_checks) and not range_violations
         set_record: dict[str, Any] = {
@@ -1234,7 +1346,70 @@ def _check_view_cone(spatial: dict[str, Any], check: dict[str, Any]) -> dict[str
     }
 
 
+class UnsupportedCheckType(ValueError):
+    """A requirement names a ``type`` the evaluator does not implement.
+
+    Kept distinct from the per-check guard in :func:`_evaluate_check`: an
+    unknown type aborts the evaluation with a ``ValueError`` naming it, which
+    is the documented contract (README, ADR 0020).
+    """
+
+
 def _evaluate_check(
+    spatial: dict[str, Any],
+    check: Any,
+    run_dir: Path,
+    timeout: float = 30.0,
+    position: int | None = None,
+) -> dict[str, Any]:
+    """Evaluate one requirement entry; a malformed entry fails alone.
+
+    This is the single boundary that keeps the ADR 0021/0022 promise: whatever
+    goes wrong inside one check (a missing key, a wrong shape, a feature
+    without the property the check needs, a kernel error) becomes a
+    ``status: "fail"`` record with an ``error`` for that check, and the
+    remaining checks still evaluate. Individual evaluators add more specific
+    messages where they can; this guard is what makes the promise hold for
+    the cases nobody anticipated.
+
+    ``position`` is the entry's index in the requirements file. It names an
+    entry that has no ``id`` (``check[<position>]``) so the record can still
+    be listed in ``failed``.
+
+    Raises :class:`UnsupportedCheckType` for an unknown ``type``.
+    """
+
+    fallback_id = f"check[{position}]" if position is not None else "check[?]"
+    if not isinstance(check, dict):
+        return {
+            "id": fallback_id,
+            "type": None,
+            "status": "fail",
+            "error": f"check must be a mapping, got {type(check).__name__}: {check!r}",
+        }
+    missing = [key for key in ("id", "type") if key not in check]
+    if missing:
+        return {
+            "id": check.get("id", fallback_id),
+            "type": check.get("type"),
+            "status": "fail",
+            "error": f"check is missing required key(s) {missing}",
+        }
+    try:
+        return _dispatch_check(spatial, check, run_dir, timeout)
+    except UnsupportedCheckType:
+        raise
+    except Exception as exc:  # noqa: BLE001 - deliberate per-check boundary
+        detail = f"missing key {exc.args[0]!r}" if isinstance(exc, KeyError) and exc.args else str(exc)
+        return {
+            "id": check["id"],
+            "type": check["type"],
+            "status": "fail",
+            "error": f"could not evaluate check ({type(exc).__name__}): {detail}",
+        }
+
+
+def _dispatch_check(
     spatial: dict[str, Any], check: dict[str, Any], run_dir: Path, timeout: float = 30.0
 ) -> dict[str, Any]:
     """Route a requirement entry to its evaluator."""
@@ -1266,7 +1441,7 @@ def _evaluate_check(
         return evaluate_manufacturability(spatial, check)
     if check_type == "parametric":
         return _check_parametric(run_dir, check, timeout)
-    raise ValueError(f"unsupported check type {check_type!r}")
+    raise UnsupportedCheckType(f"unsupported check type {check_type!r}")
 
 
 def _run_relative(path: Path, run_dir: Path) -> str:
@@ -1324,6 +1499,10 @@ def _write_report(run_dir: Path, payload: dict[str, Any]) -> Path:
             )
             if "tolerance" in check:
                 lines.append(f"  tolerance: {check['tolerance']}")
+            # The error is usually the whole explanation for a failed check
+            # (unresolved target, malformed entry), so the agent must see it.
+            if check.get("error"):
+                lines.append(f"  error: {check['error']}")
         lines.append("")
     else:
         lines.extend(["## Failed Checks", "", "None.", ""])
@@ -1347,8 +1526,13 @@ def sweep_run(run_dir: Path, requirements_path: Path, timeout: float = 30.0) -> 
     """
 
     requirements = yaml.safe_load(requirements_path.read_text(encoding="utf-8")) or {}
-    parametric = [check for check in requirements.get("checks", []) if check.get("type") == "parametric"]
-    sweeps = [_check_parametric(run_dir, check, timeout) for check in parametric]
+    # A parametric check reads each set's own spatial.json, never the base
+    # run's, so no spatial facts are loaded here.
+    sweeps = [
+        _evaluate_check({}, check, run_dir, timeout, position)
+        for position, check in enumerate(requirements.get("checks") or [])
+        if isinstance(check, dict) and check.get("type") == "parametric"
+    ]
     failed = [sweep["id"] for sweep in sweeps if sweep["status"] != "pass"]
     return {"status": "pass" if not failed else "fail", "sweeps": sweeps, "failed": failed}
 
@@ -1358,7 +1542,10 @@ def evaluate_run(run_dir: Path, requirements_path: Path, timeout: float = 30.0) 
 
     spatial = read_json(run_dir / "spatial.json")
     requirements = yaml.safe_load(requirements_path.read_text(encoding="utf-8")) or {}
-    results = [_evaluate_check(spatial, check, run_dir, timeout) for check in requirements.get("checks", [])]
+    results = [
+        _evaluate_check(spatial, check, run_dir, timeout, position)
+        for position, check in enumerate(requirements.get("checks") or [])
+    ]
     failed = [result["id"] for result in results if result["status"] != "pass"]
 
     payload = {

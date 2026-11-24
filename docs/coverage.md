@@ -98,6 +98,22 @@ CLI is the agent-facing interface. Those tests exercise:
   AABB `clearance` follows the same rule (2026-10-23 fix): an unknown label and a
   reference without `obj.` each fail the check alone while a valid check in the
   same file still passes (`tests/test_graceful_evaluation.py`).
+- Evaluator boundary (2026-11-24 review, `tests/test_evaluator_robustness.py`,
+  kernel-free and in-process): ten malformed checks across eight check types
+  each fail alone beside a passing check; an entry without `id`/`type` is
+  reported by position; an unknown `type` still raises; numeric checks with no
+  `equals`/`min`/`max`, an unknown DFM rule, and a tip-angle gate without
+  `com_height` fail instead of passing; `interference` fails on an unreadable
+  STEP and on a kernel error; the sweep directory stays under `sweeps/` for
+  path-like check ids; `report.md` carries the error text.
+- Duplicate labels (`tests/test_duplicate_label.py`): a repeated label raises
+  in `publish` and `publish_sheet_metal` (one shared namespace), while
+  `publish_flat` may reuse a part's label and `clear_registry` releases labels.
+- Pose-independent feature detection
+  (`tests/test_tilted_feature_detection.py`): through holes, a blind hole, a
+  boss, and an obround slot keep their kind, size, and `through` flag under
+  three non-principal placements, hole centers and axes follow the placement,
+  and the principal-axis records are unchanged.
 
 Known gaps:
 
@@ -113,13 +129,11 @@ Known gaps:
   invocation.
 - Slot detection is limited to paired partial cylindrical end faces.
 - Shaded raster rendering is a simple software renderer, not photorealistic.
-- The sheet-metal folded solid (ADR 0016) uses a rectilinear envelope that omits
-  the rounded inside-radius corner; the developed flat length carries the
-  bend-allowance correction that matters for fabrication.
-- The DFM `min_bend_radius`/`hole_to_bend` rules (ADR 0018) act on explicitly
-  published `kind="bend"` features; the standard sheet-metal flow records bends in
-  `bends.json` (consumed by the `bend` check), so these DFM rules are inert until
-  such a feature is published.
+- The sheet-metal folded solid (ADR 0034) is a constant-thickness ribbon about
+  the neutral fibre, so its modelled inside radius is
+  `inside_radius + (k_factor - 0.5) * thickness`, not `inside_radius`. When
+  that value is negative the solid is self-intersecting and nothing rejects it
+  (LOG.md, 2026-11-24). The developed flat length is unaffected.
 - The contact sheet (ADR 0019) embeds the real shaded raster in the ISO panel
   only; the orthographic/section panels stay placeholders because no SVG
   rasterizer is available headless (the real SVG projections exist as standalone

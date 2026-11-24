@@ -122,8 +122,20 @@ def _is_close(left: float, right: float, tolerance: float = 1e-5) -> bool:
     return abs(left - right) <= tolerance
 
 
+def _is_principal_axis(axis: list[float]) -> bool:
+    """True when a direction lies along world X, Y, or Z (either sense)."""
+
+    norm = sqrt(sum(component * component for component in axis))
+    return norm > 0 and max(abs(component) for component in axis) >= norm * (1 - 1e-9)
+
+
 def _is_full_cylindrical_face(face_bbox: dict[str, list[float]], radius: float, axis_index: int) -> bool:
-    """Identify full cylindrical faces versus partial slot-end cylinders."""
+    """Identify full cylindrical faces versus partial slot-end cylinders.
+
+    ``face_bbox`` must be axis-aligned in a frame where the cylinder axis is the
+    coordinate axis ``axis_index``: a full cylinder then spans exactly one
+    diameter along both other axes, a partial one does not.
+    """
 
     diameter = radius * 2
     perpendicular_axes = [axis for axis in range(3) if axis != axis_index]
@@ -285,6 +297,10 @@ def _detected_topology_features(
     detected: list[dict[str, Any]] = []
     partial_cylinders: list[dict[str, Any]] = []
     plane_index = 1
+    # Object extents measured in a frame aligned with a tilted cylinder axis,
+    # keyed by that axis; relocating the whole shape is the expensive step and
+    # every hole of a bolt pattern shares one axis.
+    tilted_object_bboxes: dict[tuple[float, ...], dict[str, list[float]]] = {}
 
     for face in shape.faces():
         geom_type = str(getattr(face, "geom_type", ""))
@@ -295,13 +311,37 @@ def _detected_topology_features(
         if not geom_type.endswith("CYLINDER"):
             continue
 
-        face_bbox = _bbox_dict(face.bounding_box())
         axis = _vector_from(face.axis_of_rotation.direction)
         axis_index = _dominant_axis(axis)
-        through = face_bbox["size"][axis_index] >= object_bbox["size"][axis_index] - 1e-5
         radius = float(face.radius)
-        full_cylinder = _is_full_cylindrical_face(face_bbox, radius, axis_index)
-        center = _center_from_bbox(face_bbox) if full_cylinder else _vector_from(face.center())
+        # A full cylinder spans one diameter across its axis, and a through
+        # feature spans the whole part along it. Both are bounding-box tests,
+        # so both need a box aligned with the cylinder axis. Detection runs on
+        # the PLACED part, and a placement can tilt the axis off X/Y/Z; the
+        # world box then measures neither, and two tilted holes were reported
+        # as one phantom slot. A tilted cylinder is therefore measured in a
+        # frame whose Z is its own axis. The principal-axis branch keeps the
+        # world box so existing records stay identical.
+        if _is_principal_axis(axis):
+            face_bbox = _bbox_dict(face.bounding_box())
+            extent = face_bbox["size"][axis_index]
+            object_extent = object_bbox["size"][axis_index]
+            full_cylinder = _is_full_cylindrical_face(face_bbox, radius, axis_index)
+            full_center = _center_from_bbox(face_bbox)
+        else:
+            from build123d import Plane, Vector
+
+            frame = Plane(origin=(0, 0, 0), z_dir=tuple(axis))
+            face_bbox = _bbox_dict(frame.to_local_coords(face).bounding_box())
+            key = tuple(round(component, 9) for component in axis)
+            if key not in tilted_object_bboxes:
+                tilted_object_bboxes[key] = _bbox_dict(frame.to_local_coords(shape).bounding_box())
+            extent = face_bbox["size"][2]
+            object_extent = tilted_object_bboxes[key]["size"][2]
+            full_cylinder = _is_full_cylindrical_face(face_bbox, radius, 2)
+            full_center = _vector_from(frame.from_local_coords(Vector(*_center_from_bbox(face_bbox))))
+        through = extent >= object_extent - 1e-5
+        center = full_center if full_cylinder else _vector_from(face.center())
         if full_cylinder:
             kind = "cylindrical_hole" if through else "cylindrical_boss"
             feature = {
@@ -314,7 +354,7 @@ def _detected_topology_features(
                 "detected": True,
             }
             if kind == "cylindrical_boss":
-                feature["height"] = face_bbox["size"][axis_index]
+                feature["height"] = extent
             detected.append(feature)
         else:
             partial_cylinders.append(
@@ -326,7 +366,7 @@ def _detected_topology_features(
                     "axis_pos": _vector_from(face.axis_of_rotation.position),
                     "axis_index": axis_index,
                     "radius": radius,
-                    "through": face_bbox["size"][axis_index] > 1e-5,
+                    "through": extent > 1e-5,
                 }
             )
 

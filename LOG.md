@@ -665,3 +665,144 @@ but three background waiters polling `pgrep -f "pytest tests/"` matched their
 own command lines and span for 12 hours without reporting, and the gate log was
 written with a doubled `-q` that suppresses pytest's result line. Both are in
 LESSONS.md.
+
+## 2026-11-24 — Full code review; seven defect classes fixed
+
+Requested: a comprehensive review and an appraisal of the codebase after a run
+of bug-fix commits, with obvious bugs fixed. All 17 modules in `src/cadx/`
+were read in full and each finding below was reproduced through the CLI before
+it was fixed or recorded. Branch `claude/fix-review-2026-11-24`. Bug fixes, so
+no ADR.
+
+Fixed (red: 36 of 40 new tests failed; the other 4 pin behavior that must not
+change):
+
+- **Malformed checks aborted `cadx evaluate`.** Eight more instances of the
+  ADR 0021/0022 crash family: `feature_count` without `equals`,
+  `center_of_mass` without `expected`, `stability` without `support`,
+  `clearance` with one reference, an `interference` reference without `obj.`,
+  a DFM rule entry without `rule`, a check without `id`, and
+  `feature_alignment` on a published hole with no `axis` (`KeyError: 'axis'`;
+  the `cadx init` starter publishes its holes that way). Fix:
+  `evaluate._evaluate_check` is now the one per-check boundary. Any exception
+  inside a check becomes a failed record with `error`. An unknown `type` still
+  raises (`UnsupportedCheckType`, a `ValueError`), as documented.
+  `feature_alignment` names the feature that lacks a `center` or `axis`.
+- **Checks passed without comparing anything.** A `dimension`/`topology`/
+  `clearance` check with none of `equals`/`min`/`max` (for example the typo
+  `equal: 80`) passed. A `manufacturability` rule with an unknown name was
+  skipped, so the check passed. `min_tip_angle_deg` without `com_height` was
+  skipped. All three now fail with an `error`. The unknown-rule skip was
+  pinned by `test_unknown_rule_and_passing_slot` (written for branch coverage
+  in ADR 0018, which does not state the skip as a decision); that test now
+  asserts the failure. This is the one fix that reverses a tested behavior.
+- **`interference` counted an unmeasured pair as clear.** A blanket
+  `except Exception: volume = 0.0` turned any kernel failure into "no
+  overlap". This is the mechanism behind D-001 (ADR 0030). An unreadable STEP
+  or a failed `intersect` now fails the check and names the pair. On
+  build123d 0.10 a non-overlapping `intersect` returns an empty `Compound`
+  with volume 0 and does not raise, so valid runs are unchanged.
+- **A check id was used as a path that gets deleted.** `_check_parametric`
+  ran `shutil.rmtree(run_dir / "sweeps" / check["id"])`. The id `..` deleted
+  the run directory; `../../x` or an absolute id deleted a directory outside
+  it. `_sweep_dir_name` maps the id to one safe directory name.
+- **Duplicate labels overwrote each other.** A second `publish("plate", ...)`
+  replaced the first part's STEP/STL/GLB/DXF and shadowed it in every
+  label-keyed check, with no warning. `publish` and `publish_sheet_metal` now
+  raise `ValueError` on a repeated label.
+- **Tilted parts lost their holes.** `inspector._detected_topology_features`
+  decided "full cylinder" and "through" from world axis-aligned bounding
+  boxes, which is only valid for a cylinder along X, Y, or Z. An 80 x 20 x 4
+  plate with two 6 mm holes, placed with a 30 degree tilt, reported no holes
+  and one phantom 60 mm slot. A cylinder off the principal axes is now
+  measured in a frame aligned with its own axis. Records for principal-axis
+  cylinders are unchanged.
+- **`report.md` omitted the error.** A failed check with an `error` printed
+  `observed: None / expected: None` and nothing else. The error line is added.
+
+Documentation corrected: README claimed multi-part runs do not auto-flatten
+(they do, one DXF per prism); the `cadx.dfm` module docstring and
+`docs/coverage.md` still said the bend DFM rules are inert (ADR 0033 fixed
+that) and that the folded solid is a rectilinear envelope (ADR 0034 replaced
+it).
+
+Appraisal:
+
+- The core geometry is sound. Mate algebra, inertia aggregation, bend
+  allowance, and the view-cone and stability maths were checked by reading and
+  no error was found. The JSON contracts are consistent and the warning
+  channels are well used.
+- The dominant defect pattern is at input boundaries, and it has been fixed
+  one instance at a time. Two of the three fixes before this review (AABB
+  clearance on 2026-10-23, render on 2026-10-31) and ADRs 0021, 0022, and 0031
+  are all the same class: one bad item aborts a whole command. Each fix covered the reported instance and left
+  its siblings. The evaluator now has a single guard; the renderer and the
+  loop do not (see proposals).
+- The second pattern is fail-open defaults: an unknown or missing value is
+  treated as "nothing to check" and the check passes. The harness is a gate
+  for autonomous agents, so a silent pass is worse than a crash.
+- Comments are much longer than AGENTS.md asks for. Many restate ADR content
+  and history (for example `registry.publish_sheet_metal` has about 60 lines
+  of comment for 40 of code). Two comments had become false.
+- `runner.py` (1,530 lines) holds mate resolution, mass properties, exports,
+  DXF flattening, and process control, and `worker.py` imports 12 private
+  names from it. `_resolve_export_path` exists in five copies, `_object_index`
+  in three, `_point_segment_distance` and `_vector_from` in two each.
+- Tests are behavioral and broad (356 tests), but the suite takes 10 to 13
+  minutes and has no fast subset, which AGENTS.md requires. There is no
+  linter, type checker, coverage run, or CI configured.
+
+Proposals (not implemented; each changes behavior or structure):
+
+1. Validate `requirements.yaml` once, before evaluation, against a per-type
+   table of required and allowed keys. This would reject unknown keys such as
+   `equal:` for every check type and replace the scattered guards.
+2. Parametric sets replace the run's parameters instead of overlaying them.
+   A run with `tilt: 30` swept with `{unrelated: 1}` evaluates at the design's
+   default `tilt` (reproduced: bbox z 4.0, not 13.46). A stack-up study
+   probably expects the other parameters to stay at the run's values. ADR 0020
+   does not say which is intended.
+3. `cadx run --params typo.yaml` runs with empty parameters and reports
+   `ok`. A path given explicitly should have to exist.
+4. `cadx evaluate` exits 0 when checks fail; `sweep` and `loop` exit 1.
+5. Renderer: guard each view and section separately, so one projection
+   failure costs one view and a `render_view_failed` warning. All three
+   2026-10-31 crashes would have been contained by this. `cadx loop` should
+   treat a render failure as a warning, because evaluation does not need it.
+6. `cadx loop` stops at the first failed run without calling the agent
+   command, so the agent cannot repair a syntax error it introduced. The agent
+   command also has no timeout.
+7. Sheet metal: the folded solid's inside radius is
+   `inside_radius + (k_factor - 0.5) * thickness`. Below zero (for example
+   R 0.2, k 0.33, t 3) the solid is invalid (`is_valid` is False) and is still
+   exported. `angle_deg <= 0` raises a raw OCCT error. The docstrings call the
+   flange inputs "outside flange lengths", but they are straight-leg lengths:
+   the folded bounding box is `flange + rho + t/2`.
+8. A cylinder that does not span the part is reported as `cylindrical_boss`
+   whether it is a boss, a blind hole, or a through hole in a flange. The DFM
+   rules compensate by treating bosses as holes. A `convex`/`concave` flag
+   from the face orientation would separate them.
+9. When detection confirms an explicit feature, the explicit record is kept
+   and the detected one is dropped, along with its `axis` and `through`. The
+   merge could copy the detected facts the publication lacks, which would make
+   `feature_alignment` work on publications without `axis`.
+10. `interference` silently falls back to AABB overlap for every pair when any
+    selected object has no STEP export. The record should state the method.
+11. `feature_count` accepts only `equals`; `feature_dimension` accepts only
+    `equals` and a `kind` selector. `dimension` accepts `min`/`max`.
+12. `bend` checks are not scoped to a part; `count` spans all sheet parts.
+13. `compare` reports only bbox size deltas for objects present in both runs.
+    Added and removed objects and features are not reported.
+14. Translucent rendering composites one full-size RGBA overlay per facet
+    (cost: facets x pixels). Crop the overlay to the facet's bounding box.
+15. `materials._PART_META_HINTS` matches substrings in order, so
+    "glass-filled nylon" and "fiberglass" render as translucent glass.
+16. Rename `cadx/publish.py` (LESSONS 2026-07-24): importing it rebinds the
+    package attribute `cadx.publish` from the function to the module.
+17. Split `runner.py` by concern and move the shared helpers listed above
+    into one module.
+18. Mark kernel tests and add a fast suite of the kernel-free tests; add
+    `ruff` and a type checker to `pyproject.toml`.
+19. Labels are used as file names without validation; a label containing `/`
+    produces `export_failed` warnings and `..` writes outside the run
+    directory.
