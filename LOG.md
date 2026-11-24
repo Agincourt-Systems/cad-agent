@@ -720,6 +720,12 @@ change):
 - **`report.md` omitted the error.** A failed check with an `error` printed
   `observed: None / expected: None` and nothing else. The error line is added.
 
+Gate: master baseline in a separate worktree `316 passed in 2862.86s`; the
+branch `356 passed in 2466.52s` (316 + 40 new). Both timings are inflated by
+another project's jobs holding the machine at load 10 on 8 cores; the
+11-minute figure in the README is an estimate from the 2026-10-31 run plus
+the 58 s the new tests take.
+
 Documentation corrected: README claimed multi-part runs do not auto-flatten
 (they do, one DXF per prism); the `cadx.dfm` module docstring and
 `docs/coverage.md` still said the bend DFM rules are inert (ADR 0033 fixed

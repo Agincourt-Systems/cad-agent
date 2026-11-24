@@ -32,7 +32,8 @@ stable.
   cover the change. The repo has no slow-test marker yet, so there is no
   smaller whole-repo suite.
 - Full suite (gate before merge): `python3 -m pytest tests/`. 356 tests, about
-  11 minutes on fjord. Do not add `-q`: `addopts` in `pyproject.toml` already
+  11 minutes on an idle fjord (41 minutes when other jobs load the machine). Do
+  not add `-q`: `addopts` in `pyproject.toml` already
   sets it, and a second one suppresses the `N passed` result line that makes
   the run readable as a gate.
 - ADRs are in `docs/adr/`; coverage rationale is in `docs/coverage.md`.
